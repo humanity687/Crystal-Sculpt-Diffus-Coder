@@ -11,7 +11,6 @@ Chat Route - /chat SSE stream
 import json
 import queue
 import sys
-import io
 import uuid
 import markdown
 from flask import Blueprint, request, jsonify, Response, stream_with_context
@@ -20,7 +19,7 @@ from src import state
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from knowledge import search, add_conversation
+from knowledge import search, add_conversation, add_conversation_with_llm
 
 chat_bp = Blueprint("chat", __name__)
 
@@ -34,26 +33,19 @@ def chat():
         return jsonify({"error": "Message cannot be empty"}), 400
 
     def generate():
-        old_stdout = sys.stdout
-        sio = io.StringIO()
-        log_q = queue.Queue()
-
-        class QueueStream(io.TextIOBase):
-            def write(self, s):
-                if s:
-                    log_q.put(s)
-                return sio.write(s)
-
-        sys.stdout = QueueStream()
         full_response = ""
 
         try:
-            # Knowledge retrieval
+            # Knowledge retrieval (two-level summary memory system)
             try:
                 k = getattr(state.chat_agent, "knowledge_k", 5)
                 relevant = search(user_message, k=k)
                 for item in relevant:
-                    yield f"data: {json.dumps({'type': 'knowledge', 'text': item})}\n\n"
+                    # item already has 'type' (e.g. tool_summary) — rename to 'doc_type'
+                    # to avoid overwriting the SSE event type 'knowledge'
+                    doc_type = item.pop("type", "generic")
+                    item["doc_type"] = doc_type
+                    yield f"data: {json.dumps({'type': 'knowledge', **item})}\n\n"
             except Exception as e:
                 print(f"Knowledge retrieval failed: {e}")
 
@@ -61,15 +53,6 @@ def chat():
             gen_exhausted = False
 
             while not gen_exhausted:
-                # Flush logs
-                while True:
-                    try:
-                        line = log_q.get_nowait()
-                        if line:
-                            yield f"data: {json.dumps({'type': 'log', 'text': line})}\n\n"
-                    except queue.Empty:
-                        break
-
                 try:
                     item = next(agent_gen)
                 except StopIteration:
@@ -112,7 +95,7 @@ def chat():
 
                     # Block until the user approves or rejects via /api/confirm_tool
                     try:
-                        approved = confirm_queue.get()
+                        approved = confirm_queue.get(timeout=300)
                     except queue.Empty:
                         approved = False  # Treat timeout as rejection
 
@@ -156,7 +139,7 @@ def chat():
 
                     # Block until the user returns the final content via /api/confirm_tool
                     try:
-                        final_content = confirm_queue.get()
+                        final_content = confirm_queue.get(timeout=300)
                     except queue.Empty:
                         final_content = item.get("content", "")  # Fallback to AI content
 
@@ -180,15 +163,6 @@ def chat():
                 else:
                     print(f"Unknown item from agent generator: {item}")
 
-            # Final flush of logs
-            while True:
-                try:
-                    line = log_q.get_nowait()
-                    if line:
-                        yield f"data: {json.dumps({'type': 'log', 'text': line})}\n\n"
-                except queue.Empty:
-                    break
-
             # Markdown rendering for full response
             if full_response:
                 try:
@@ -199,9 +173,19 @@ def chat():
                 except Exception as e:
                     yield f"data: {json.dumps({'type': 'error', 'text': f'Markdown rendering failed: {str(e)}'})}\n\n"
 
-            # Conversation history
+            # Conversation history (two-level summary memory)
             if full_response:
-                add_conversation(user_message, full_response)
+                agent = state.chat_agent
+                if agent and hasattr(agent, "client") and agent.client:
+                    add_conversation_with_llm(
+                        user_message,
+                        full_response,
+                        client=agent.client,
+                        model=agent.model,
+                        background=True,
+                    )
+                else:
+                    add_conversation(user_message, full_response)
 
             # Done signal
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
@@ -224,8 +208,6 @@ def chat():
 
             traceback.print_exc()
             yield f"data: {json.dumps({'type': 'error', 'text': f'Agent crashed: {str(e)}'})}\n\n"
-        finally:
-            sys.stdout = old_stdout
 
     return Response(
         stream_with_context(generate()),
@@ -278,6 +260,12 @@ def read_file():
 
     try:
         p = Path(path).expanduser().resolve()
+        # Restrict file access to the project directory and safe subdirectories
+        project_root = Path(__file__).parent.parent.parent.resolve()
+        try:
+            p.relative_to(project_root)
+        except ValueError:
+            return jsonify({"error": "Access denied: path outside project directory"}), 403
         if not p.exists():
             return jsonify({"content": ""}), 200
         with open(p, "r", encoding="utf-8") as f:
@@ -305,6 +293,12 @@ def write_file():
 
     try:
         p = Path(path).expanduser().resolve()
+        # Restrict file access to the project directory and safe subdirectories
+        project_root = Path(__file__).parent.parent.parent.resolve()
+        try:
+            p.relative_to(project_root)
+        except ValueError:
+            return jsonify({"error": "Access denied: path outside project directory"}), 403
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, "w", encoding="utf-8") as f:
             f.write(content)

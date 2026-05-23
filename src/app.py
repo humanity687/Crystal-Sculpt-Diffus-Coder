@@ -22,10 +22,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.agent import FranxAgent
 from src.state import load_config, save_config
+from knowledge.crystals import CrystalStore
 from src.routes.auth import auth_bp
 from src.routes.chat import chat_bp
 from src.routes.config import config_bp
 from src.routes.tasks import tasks_bp
+from src.routes.crystals import crystals_bp
 
 # Import scheduler to start its background thread
 from src import scheduler
@@ -45,6 +47,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(chat_bp)
 app.register_blueprint(config_bp)
 app.register_blueprint(tasks_bp)
+app.register_blueprint(crystals_bp)
 
 _public_url = None
 
@@ -70,6 +73,30 @@ def init_agents():
     knowledge_k = config.get("knowledge_k", 5)
     settings = config.get("settings", "You are a helpful AI assistant.")
 
+    # Initialize shared CrystalStore
+    crystal_path = config.get("crystal_db_path", "./crystals.db")
+    state.crystal_store = CrystalStore(crystal_path)
+
+    # Initialize CrystalObserver for automatic crystal extraction
+    from knowledge.crystal_observer import CrystalObserver
+
+    crystal_observer = CrystalObserver(
+        api_key=config["api_key"],
+        base_url=config["base_url"],
+        model=config["model"],
+        crystal_store=state.crystal_store,
+    )
+
+    # Print crystal inventory
+    crystals = state.crystal_store.get_active_crystals()
+    if crystals:
+        from collections import Counter
+        by_type = Counter(c["crystal_type"] for c in crystals)
+        type_summary = ", ".join(f"{t}={n}" for t, n in sorted(by_type.items()))
+        print(f"[CrystalStore] Loaded {len(crystals)} crystals: {type_summary}")
+    else:
+        print("[CrystalStore] Initialized — empty, ready for engineering memory")
+
     state.chat_agent = FranxAgent(
         key=config["api_key"],
         url=config["base_url"],
@@ -78,6 +105,8 @@ def init_agents():
         temperature=temperature,
         thinking=thinking,
         knowledge_k=knowledge_k,
+        crystal_store=state.crystal_store,
+        crystal_observer=crystal_observer,
     )
 
     state.tasks_agent = FranxAgent(
@@ -88,6 +117,7 @@ def init_agents():
         temperature=temperature,
         thinking=thinking,
         knowledge_k=knowledge_k,
+        crystal_store=state.crystal_store,
     )
 
     # Regenerate STARTUP_ID so the frontend can detect the agent reset

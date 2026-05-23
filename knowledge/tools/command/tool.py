@@ -1,18 +1,29 @@
 """
 Execute System Command Tool
-Allows AI to execute system commands, delete operations are prohibited for security
+Allows AI to execute system commands with a whitelist-based security model.
 """
 
+import shlex
 import subprocess
 import locale
 
 # System encoding for decoding command output (e.g. cp936 on Chinese Windows)
 _SYS_ENCODING = locale.getpreferredencoding()
 
+# Allowed command whitelist — only these executables can be run
+_ALLOWED_COMMANDS = {
+    "echo", "cat", "head", "tail", "wc", "sort", "uniq", "grep",
+    "find", "ls", "dir", "pwd", "whoami", "date", "time", "env",
+    "mkdir", "touch", "mv", "cp", "chmod", "chown",
+    "git", "python", "python3", "python3-m", "pip", "pip3",
+    "npm", "node", "npx", "cargo", "rustc", "go", "java", "javac",
+    "curl", "wget", "tar", "gzip", "gunzip", "zip", "unzip",
+}
+
 
 def execute(command: str) -> str:
     """
-    Execute system command
+    Execute system command (whitelist-based security model).
 
     Args:
         command: Command string to execute
@@ -20,43 +31,33 @@ def execute(command: str) -> str:
     Returns:
         Command execution result or error message
     """
-    # Convert command to lowercase for security check
-    cmd_lower = command.lower()
+    # Parse command into list form (shell=False safe)
+    try:
+        args = shlex.split(command)
+    except ValueError as e:
+        return f"❌ Error: Failed to parse command: {e}"
 
-    # Define dangerous command pattern list
-    dangerous_patterns = [
-        "rm ",
-        "del ",
-        "rmdir ",
-        "rd ",
-        "erase ",
-        "shred ",
-        "unlink ",
-        "remove-item",
-        "ri ",
-        "rmdir /s",
-        "rd /s",
-        "remove-item -recurse",
-        "rm -r",
-        "rm -f",
-        "rm -rf",
-        " && rmdir",
-        " && del",
-        " | rmdir",
-        " | del",
-    ]
+    if not args:
+        return "❌ Error: Empty command"
 
-    # Check if it contains dangerous command patterns
-    for pattern in dangerous_patterns:
-        if pattern in cmd_lower:
-            return (
-                "❌ Error: Deletion commands are prohibited. FranxAgent security rules do not allow direct deletion of files or folders."
-                "If you need to clean up files, please tell me to use 'move' operation, I will help you move files to 'C:\\ToBeDeleted' directory."
-            )
+    # Check executable against whitelist
+    executable = args[0]
+    if executable not in _ALLOWED_COMMANDS:
+        return (
+            f"❌ Error: Command '{executable}' is not in the allowed list. "
+            f"Permitted commands: {', '.join(sorted(_ALLOWED_COMMANDS))}"
+        )
+
+    # Block deletion operations explicitly (e.g. rm, del, rmdir) as final safety net
+    dangerous = {"rm", "del", "rmdir", "rd", "erase", "shred", "unlink"}
+    if executable in dangerous:
+        return (
+            "❌ Error: Deletion commands are prohibited. FranxAgent security rules "
+            "do not allow direct deletion of files or folders."
+        )
 
     try:
-        # Execute command, capture output and errors
-        result = subprocess.run(command, shell=True, capture_output=True, timeout=30)
+        result = subprocess.run(args, shell=False, capture_output=True, timeout=30)
 
         # Decode with system encoding first (e.g. cp936 on Chinese Windows), fall back to UTF-8
         def safe_decode(data: bytes) -> str:
@@ -86,5 +87,7 @@ def execute(command: str) -> str:
 
     except subprocess.TimeoutExpired:
         return "Error: Command execution timed out"
+    except FileNotFoundError:
+        return f"❌ Error: Command '{executable}' not found on the system"
     except Exception as e:
         return f"Execution failed: {e}"

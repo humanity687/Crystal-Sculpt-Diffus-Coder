@@ -4,7 +4,7 @@
 # FranxAgent is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License along with FranxAgent.  If not, see <https://www.gnu.org/licenses/>.
 
-python3-m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
 pip3 install -r requirements.txt

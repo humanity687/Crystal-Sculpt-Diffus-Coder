@@ -3,8 +3,14 @@
 /messages.json
 __pycache__/
 *.pyc
-knowledge/skills/*
+knowledge/raw_memories/*
+knowledge/raw_skills/*
+knowledge/raw_tools/*
+knowledge/memories_summary/*
+knowledge/tools_summary/*
+knowledge/skills_summary/*
 knowledge/memories/*
+knowledge/skills/*
 knowledge/knowledge.db
 /private.key
 /public.key

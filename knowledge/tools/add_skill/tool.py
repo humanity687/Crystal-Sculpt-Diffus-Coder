@@ -5,24 +5,24 @@
 # You should have received a copy of the GNU Affero General Public License along with FranxAgent.  If not, see <https://www.gnu.org/licenses/>.
 
 import time
+import json
 import sqlite3
 from pathlib import Path
 
-SKILLS_DIR = Path(__file__).parent.parent.parent / "skills"
-SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+from knowledge.config import RAW_SKILLS_DIR, SKILLS_SUMMARY_DIR, VECTOR_DB_PATH, KNOWLEDGE_ROOT
 
 
 def execute(name: str, content: str):
     """
-    Save a skill as Markdown and immediately index it into the knowledge base.
+    Save a skill as Markdown to raw_skills/ and index its summary into the knowledge base.
 
     Args:
         name: Skill name (used as filename, e.g., "nginx_setup")
         content: Skill content in Markdown format
     """
     # Lazy import to avoid circular dependency at module load time
-    from knowledge.vector import add_document
-    from knowledge.config import VECTOR_DB_PATH, KNOWLEDGE_ROOT
+    from knowledge.vector import add_summary
+    from knowledge.summarizer import extract_summary_from_text, build_searchable_text
 
     # Sanitize name
     safe_name = "".join(c for c in name if c.isalnum() or c in ("_", "-")).strip()
@@ -30,14 +30,32 @@ def execute(name: str, content: str):
         return "Error: Invalid skill name"
 
     filename = f"{safe_name}.md"
-    filepath = SKILLS_DIR / filename
+    filepath = RAW_SKILLS_DIR / filename
     relative_path = str(filepath.relative_to(KNOWLEDGE_ROOT))
     source_key = f"file:{relative_path}"
 
-    # Write the file
+    # Write the raw skill file
     filepath.write_text(content, encoding="utf-8")
 
-    # Remove old entries with the same source (handle updates)
+    # Generate summary and write to skills_summary/
+    summary_text = extract_summary_from_text(content)
+    if not summary_text:
+        return f"Error: Could not extract summary from skill '{safe_name}'"
+
+    memory_id = f"skill:{safe_name}"
+    summary_data = {
+        "memory_id": memory_id,
+        "title": safe_name,
+        "summary": summary_text[:200],
+        "key_points": [summary_text],
+        "tags": [],
+    }
+    searchable = build_searchable_text(summary_data)
+
+    summary_path = SKILLS_SUMMARY_DIR / f"{safe_name}.summary.json"
+    summary_path.write_text(json.dumps(summary_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # Remove old vector entries with the same source (handle updates)
     conn = sqlite3.connect(VECTOR_DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM vectors WHERE source = ?", (source_key,))
@@ -48,8 +66,14 @@ def execute(name: str, content: str):
     conn.commit()
     conn.close()
 
-    # Add to vector database immediately
-    add_document(content, source=source_key, doc_type="skill")
+    # Index summary into vector DB
+    add_summary(
+        memory_id=memory_id,
+        text=searchable,
+        doc_type="skill_summary",
+        source=source_key,
+        summary_json=json.dumps(summary_data, ensure_ascii=False),
+    )
 
     # Update file_versions to prevent re-indexing on restart
     mtime = filepath.stat().st_mtime

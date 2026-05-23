@@ -23,8 +23,11 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from flask import request, jsonify
 
+import threading
+
 from src.state import load_config, save_config
 
+_jwt_secret_lock = threading.Lock()
 PRIVATE_KEY_FILE = "private.key"
 PUBLIC_KEY_FILE = "public.key"
 
@@ -104,9 +107,12 @@ def generate_jwt_token():
     config = load_config()
     secret = config.get("jwt_secret")
     if not secret:
-        secret = secrets.token_urlsafe(32)
-        config["jwt_secret"] = secret
-        save_config(config)
+        with _jwt_secret_lock:
+            # Double-check inside lock to avoid race
+            if not config.get("jwt_secret"):
+                secret = secrets.token_urlsafe(32)
+                config["jwt_secret"] = secret
+                save_config(config)
     now = datetime.now(timezone.utc)
     payload = {
         "exp": now + timedelta(hours=1),

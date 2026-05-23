@@ -14,7 +14,7 @@ import json
 import time
 import threading
 
-from .config import PROJECT_ROOT, TOOLS_DIR
+from .config import PROJECT_ROOT, TOOLS_DIR, RAW_TOOLS_DIR
 from knowledge.mcps import MCPStdioClient
 
 # Internal tool registry
@@ -35,10 +35,13 @@ def load_builtin_tools():
             continue
         tool_name = item.name
         tool_path = item / "tool.py"
-        readme_path = item / "README.md"
+        readme_path = RAW_TOOLS_DIR / f"{tool_name}.md"
 
-        if not (tool_path.exists() and readme_path.exists()):
-            print(f"⚠️ Tool {tool_name} is missing tool.py or README.md, skipping")
+        if not tool_path.exists():
+            print(f"⚠️ Tool {tool_name} is missing tool.py, skipping")
+            continue
+        if not readme_path.exists():
+            print(f"⚠️ Tool {tool_name} is missing raw_tools/{tool_name}.md, skipping")
             continue
 
         try:
@@ -147,7 +150,7 @@ def cleanup_mcp_clients():
     for client in _mcp_clients:
         try:
             client.close()
-        except:
+        except Exception:
             pass
 
 

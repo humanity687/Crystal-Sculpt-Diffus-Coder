@@ -6,23 +6,69 @@
 
 """
 Knowledge Module - Hybrid Search (Vector + FTS5 + RRF)
+
+Two-level summary memory system:
+  - Returns structured dicts with memory_id for recall tool integration.
+  - Summary types (conversation_summary, tool_summary, skill_summary) have
+    their own weight tiers, replacing the old full-document type weights.
+  - Legacy types (tool, skill, conversation, hyw) still supported for
+    backward compatibility with existing vector DB entries.
 """
 
 import sqlite3
 import numpy as np
 import re
+import json
 
 from .config import VECTOR_DB_PATH, HYBRID_VECTOR_WEIGHT, HYBRID_FTS_WEIGHT, get_model
 
+# ── Type weight mapping ──────────────────────────────────────────────
+TYPE_WEIGHTS = {
+    # New summary types (two-level memory system)
+    "conversation_summary": 0.15,
+    "tool_summary": 1.0,
+    "skill_summary": 0.8,
+    # Legacy full-document types (backward compat)
+    "conversation": 0.2,
+    "tool": 1.0,
+    "skill": 0.8,
+    "hyw": 1.0,
+    # Fallback
+    "generic": 1.0,
+}
 
-def search(query: str, k: int = 5):
-    """
-    Retrieve the top k knowledge entries most similar to the query (single-shot, no recursion)
-    Return a list of strings
+# ── Type icon mapping for display ────────────────────────────────────
+TYPE_ICONS = {
+    "conversation_summary": "💬 对话",
+    "conversation": "💬 对话(旧)",
+    "tool_summary": "🔧 工具",
+    "tool": "🔧 工具(旧)",
+    "skill_summary": "📋 技能",
+    "skill": "📋 技能(旧)",
+    "hyw": "📖 文档",
+    "generic": "📄",
+}
+
+
+def search(query: str, k: int = 5) -> list[dict]:
+    """Retrieve the top k knowledge entries.
+
+    Returns structured dicts for the two-level memory system.
+    Each dict contains:
+      - memory_id: Unique ID for recall tool (or None for legacy entries)
+      - text: The searchable text (summary or full document)
+      - type: Document type (conversation_summary, tool_summary, etc.)
+      - score: Combined RRF score
+      - title: Extracted title from summary_json (if available)
+      - icon: Display icon string
+
+    Legacy callers that expect list[str] can use [r['text'] for r in results].
     """
     conn = sqlite3.connect(VECTOR_DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, text, embedding, type FROM vectors")
+    cursor.execute(
+        "SELECT id, text, embedding, type, memory_id, summary_json FROM vectors"
+    )
     rows = cursor.fetchall()
     conn.close()
     if not rows:
@@ -30,30 +76,26 @@ def search(query: str, k: int = 5):
 
     model = get_model()
     q_emb = model.encode(query)
+
     vector_scores = []
-    for doc_id, text, emb_blob, doc_type in rows:
+    for doc_id, text, emb_blob, doc_type, memory_id, summary_json in rows:
         emb = np.frombuffer(emb_blob, dtype=np.float32)
         dot = np.dot(q_emb, emb)
         norm_q = np.linalg.norm(q_emb)
         norm_d = np.linalg.norm(emb)
         sim = dot / (norm_q * norm_d) if norm_q * norm_d != 0 else 0
 
-        if doc_type == "tool":
-            weight = 1.0
-        elif doc_type == "skill":
-            weight = 0.8
-        elif doc_type == "conversation":
-            weight = 0.2
-        else:
-            weight = 1.0
-
+        weight = TYPE_WEIGHTS.get(doc_type, TYPE_WEIGHTS["generic"])
         final_score = sim * weight
-        vector_scores.append((final_score, doc_id, text, doc_type))
+        vector_scores.append(
+            (final_score, doc_id, text, doc_type or "generic", memory_id, summary_json)
+        )
 
     vector_scores.sort(reverse=True, key=lambda x: x[0])
 
+    # ── FTS5 keyword search ──────────────────────────────────────────
     def clean_fts_query(q: str) -> str:
-        cleaned = re.sub(r"[^\w\u4e00-\u9fff\s]", " ", q)
+        cleaned = re.sub(r"[^\w一-鿿\s]", " ", q)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         return cleaned
 
@@ -80,42 +122,99 @@ def search(query: str, k: int = 5):
         fts_rank_map[rowid] = rank_idx + 1
         fts_rowids.append(rowid)
 
-    # Fetch text and type for FTS-only results
-    fts_text_map = {}
+    # Fetch metadata for FTS-only results
+    fts_data_map = {}
     if fts_rowids:
         conn_fts2 = sqlite3.connect(VECTOR_DB_PATH)
         cursor_fts2 = conn_fts2.cursor()
         placeholders = ",".join("?" * len(fts_rowids))
         cursor_fts2.execute(
-            f"SELECT id, text, type FROM vectors WHERE id IN ({placeholders})",
+            f"SELECT id, text, type, memory_id, summary_json FROM vectors "
+            f"WHERE id IN ({placeholders})",
             fts_rowids,
         )
-        for doc_id, text, doc_type in cursor_fts2.fetchall():
-            fts_text_map[doc_id] = (text, doc_type)
+        for doc_id, text, doc_type, memory_id, summary_json in cursor_fts2.fetchall():
+            fts_data_map[doc_id] = (text, doc_type or "generic", memory_id, summary_json)
         conn_fts2.close()
 
+    # ── RRF fusion ───────────────────────────────────────────────────
     K = 60
     combined = {}
-    for idx, (vec_score, doc_id, text, doc_type) in enumerate(vector_scores):
+    for idx, (vec_score, doc_id, text, doc_type, memory_id, summary_json) in enumerate(
+        vector_scores
+    ):
         rank = idx + 1
         rrf_score = HYBRID_VECTOR_WEIGHT / (K + rank)
-        combined[doc_id] = (rrf_score, text, doc_type, vec_score)
+        combined[doc_id] = [
+            rrf_score, text, doc_type, memory_id, summary_json, vec_score
+        ]
+
     for doc_id, fts_rank in fts_rank_map.items():
         rrf_score = HYBRID_FTS_WEIGHT / (K + fts_rank)
         if doc_id in combined:
-            old_score, text, doc_type, vec_score = combined[doc_id]
-            combined[doc_id] = (old_score + rrf_score, text, doc_type, vec_score)
+            combined[doc_id][0] += rrf_score
         else:
-            text, doc_type = fts_text_map.get(doc_id, ("", ""))
-            combined[doc_id] = (rrf_score, text, doc_type, 0)
+            text, doc_type, memory_id, summary_json = fts_data_map.get(
+                doc_id, ("", "generic", None, None)
+            )
+            combined[doc_id] = [rrf_score, text, doc_type, memory_id, summary_json, 0]
 
+    # ── Build structured results ─────────────────────────────────────
     sorted_items = sorted(combined.items(), key=lambda x: x[1][0], reverse=True)
-    final_texts = [item[1][1] for item in sorted_items[:k] if item[1][1]]
-    if len(final_texts) < k:
-        final_texts.extend(
-            [text for _, _, text, _ in vector_scores if text not in final_texts][
-                : k - len(final_texts)
-            ]
-        )
 
-    return final_texts
+    results = []
+    seen_texts = set()
+    for doc_id, (score, text, doc_type, memory_id, summary_json, _) in sorted_items:
+        if not text or text in seen_texts:
+            continue
+        seen_texts.add(text)
+
+        icon = TYPE_ICONS.get(doc_type, TYPE_ICONS["generic"])
+
+        # Extract title from summary_json if available
+        title = None
+        if summary_json:
+            try:
+                sj = json.loads(summary_json)
+                title = sj.get("title")
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        results.append({
+            "memory_id": memory_id,
+            "text": text,
+            "type": doc_type,
+            "score": round(score, 4),
+            "title": title,
+            "icon": icon,
+        })
+
+        if len(results) >= k:
+            break
+
+    # Fallback padding from vector-only results
+    if len(results) < k:
+        for _, doc_id, text, doc_type, memory_id, summary_json in vector_scores:
+            if text and text not in seen_texts:
+                seen_texts.add(text)
+                icon = TYPE_ICONS.get(doc_type or "generic", TYPE_ICONS["generic"])
+                results.append({
+                    "memory_id": memory_id,
+                    "text": text,
+                    "type": doc_type or "generic",
+                    "score": 0.0,
+                    "title": None,
+                    "icon": icon,
+                })
+                if len(results) >= k:
+                    break
+
+    return results
+
+
+def search_texts(query: str, k: int = 5) -> list[str]:
+    """Backward-compatible wrapper: return only text strings.
+
+    Use this when callers need the old list[str] interface.
+    """
+    return [r["text"] for r in search(query, k=k)]

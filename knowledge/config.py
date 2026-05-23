@@ -15,11 +15,25 @@ from sentence_transformers import SentenceTransformer
 PROJECT_ROOT = Path(__file__).parent.parent
 KNOWLEDGE_ROOT = Path(__file__).parent
 TOOLS_DIR = KNOWLEDGE_ROOT / "tools"
-MEMORIES_DIR = KNOWLEDGE_ROOT / "memories"
 VECTOR_DB_PATH = KNOWLEDGE_ROOT / "knowledge.db"
 
-# Create memories directory if it does not exist
-MEMORIES_DIR.mkdir(parents=True, exist_ok=True)
+# ── Raw content directories (original files, read by recall tool) ──────
+RAW_MEMORIES_DIR = KNOWLEDGE_ROOT / "raw_memories"
+RAW_TOOLS_DIR = KNOWLEDGE_ROOT / "raw_tools"
+RAW_SKILLS_DIR = KNOWLEDGE_ROOT / "raw_skills"
+
+# ── Summary directories (extracted summaries, indexed by vector DB) ─────
+MEMORIES_SUMMARY_DIR = KNOWLEDGE_ROOT / "memories_summary"
+TOOLS_SUMMARY_DIR = KNOWLEDGE_ROOT / "tools_summary"
+SKILLS_SUMMARY_DIR = KNOWLEDGE_ROOT / "skills_summary"
+
+# Backward-compat alias (points to new raw_memories)
+MEMORIES_DIR = RAW_MEMORIES_DIR
+
+# Create all directories on import
+for _d in (RAW_MEMORIES_DIR, RAW_TOOLS_DIR, RAW_SKILLS_DIR,
+           MEMORIES_SUMMARY_DIR, TOOLS_SUMMARY_DIR, SKILLS_SUMMARY_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
 
 # Hybrid search weights
 HYBRID_VECTOR_WEIGHT = 0.7

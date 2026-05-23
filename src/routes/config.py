@@ -42,31 +42,9 @@ def save_partial():
     if not user_message or not partial_response:
         return jsonify({"error": "Missing user_message or partial_response"}), 400
 
-    assistant_message = {"role": "assistant", "content": partial_response}
-    state.chat_agent.messages.append(assistant_message)
+    state.chat_agent._append_message("assistant", partial_response)
 
     add_conversation(user_message, partial_response)
-
-    return jsonify({"status": "ok"})
-
-
-@config_bp.route("/api/confirm_tool", methods=["POST"])
-@login_required
-def confirm_tool():
-    data = request.get_json()
-    confirm_id = data.get("confirm_id")
-    approved = data.get("approved", False)
-
-    if not confirm_id:
-        return jsonify({"error": "Missing confirm_id"}), 400
-
-    with state.pending_lock:
-        if confirm_id not in state.pending_confirmations:
-            return jsonify({"error": "Invalid or expired confirm_id"}), 404
-        pending = state.pending_confirmations.pop(confirm_id)
-
-    pending["result"]["done"] = approved
-    pending["event"].set()
 
     return jsonify({"status": "ok"})
 
@@ -91,8 +69,13 @@ def update_config():
         if field not in data:
             return jsonify({"error": f"Missing field: {field}"}), 400
     try:
-        with open("./config.json", "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        # Merge with existing config to preserve secret keys
+        existing = state.load_config()
+        # Keep these fields from existing config if not present in new data
+        for key in ("jwt_secret", "flask_secret_key", "password_hash"):
+            if key not in data and key in existing:
+                data[key] = existing[key]
+        state.save_config(data)
         # Lazy import to avoid circular dependency | 延迟导入避免循环依赖
         from src.app import init_agents
 

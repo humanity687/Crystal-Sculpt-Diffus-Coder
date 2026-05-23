@@ -27,6 +27,7 @@ class MCPStdioClient:
         self._lock = threading.Lock()
         self._reader_thread = None
         self._initialized = False
+        self._init_lock = threading.Lock()
 
     def start(self):
         # Start the subprocess and set up pipes
@@ -60,7 +61,7 @@ class MCPStdioClient:
                 except Exception as e:
                     sys.stderr.write(f"Failed to parse MCP response: {e}, line: {line}")
 
-    def _send_request(self, method: str, params: Any = None) -> Any:
+    def _send_request(self, method: str, params: Any = None, timeout: float = 30.0) -> Any:
         # Send a JSON-RPC request and wait for response
         self._request_id += 1
         req_id = self._request_id
@@ -69,14 +70,16 @@ class MCPStdioClient:
             payload["params"] = params
         self.process.stdin.write(json.dumps(payload) + "\n")
         self.process.stdin.flush()
-        while True:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             with self._lock:
                 if req_id in self._responses:
                     resp = self._responses.pop(req_id)
                     if "error" in resp:
                         raise Exception(resp["error"].get("message", "Unknown error"))
                     return resp.get("result")
-            time.sleep(0.01)
+            time.sleep(0.05)
+        raise TimeoutError(f"MCP request '{method}' timed out after {timeout}s")
 
     def _send_notification(self, method: str, params: Any = None):
         # Send a JSON-RPC notification (no response)
@@ -99,9 +102,14 @@ class MCPStdioClient:
         self._initialized = True
         return result
 
-    def list_tools(self):
+    def _ensure_initialized(self):
         if not self._initialized:
-            self.initialize()
+            with self._init_lock:
+                if not self._initialized:
+                    self.initialize()
+
+    def list_tools(self):
+        self._ensure_initialized()
         result = self._send_request("tools/list")
         # Handle response format: could be array or {"tools": [...]}
         if isinstance(result, dict) and "tools" in result:
@@ -111,8 +119,7 @@ class MCPStdioClient:
         raise ValueError(f"Unexpected tools/list response: {result}")
 
     def call_tool(self, name: str, arguments: Dict[str, Any]) -> str:
-        if not self._initialized:
-            self.initialize()
+        self._ensure_initialized()
         # Parameter preprocessing: convert string-formatted lists/dicts to actual objects
         processed = {}
         for key, value in arguments.items():
@@ -133,7 +140,11 @@ class MCPStdioClient:
             return result
         return json.dumps(result, ensure_ascii=False)
 
-    def close(self):
+    def close(self, timeout: float = 5.0):
         if self.process:
             self.process.terminate()
-            self.process.wait()
+            try:
+                self.process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()

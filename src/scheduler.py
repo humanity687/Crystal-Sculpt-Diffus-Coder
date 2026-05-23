@@ -11,6 +11,7 @@ Scheduler - EventBroadcaster, scheduled task execution, active task tracking
 import os
 import json
 import queue
+import sys
 import threading
 import uuid
 import time
@@ -96,7 +97,8 @@ def run_tasks():
             try:
                 with open("./tasks.json", "r", encoding="utf-8") as f:
                     tasks = json.load(f)
-            except:
+            except Exception as e:
+                print(f"[Scheduler] Failed to read tasks.json: {e}", file=sys.stderr)
                 pass
             else:
                 now = datetime.now()
@@ -107,8 +109,19 @@ def run_tasks():
                     run_tasks._executed.clear()
                     run_tasks._last_date = today
 
-                for time_str, content in tasks.items():
-                    if time_str == current_time and time_str not in run_tasks._executed:
+                # Support both old Dict format and new List format
+                task_list = []
+                if isinstance(tasks, dict):
+                    # Legacy format: {"HH:MM": "content"}
+                    task_list = [{"time": t, "content": c} for t, c in tasks.items()]
+                elif isinstance(tasks, list):
+                    task_list = tasks
+
+                for task in task_list:
+                    time_str = task.get("time", "")
+                    content = task.get("content", "")
+                    task_key = f"{time_str}:{content}"
+                    if time_str == current_time and task_key not in run_tasks._executed:
                         task_id = str(uuid.uuid4())
                         cancel_event = threading.Event()
                         with active_tasks_lock:
@@ -118,7 +131,7 @@ def run_tasks():
                         )
                         thread.daemon = True
                         thread.start()
-                        run_tasks._executed.add(time_str)
+                        run_tasks._executed.add(task_key)
         time.sleep(10)
 
 

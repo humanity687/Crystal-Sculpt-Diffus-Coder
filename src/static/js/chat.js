@@ -187,23 +187,38 @@ function updateKnowledgeBlock(msgDiv, knowledgeItems) {
   }
   const inner = currentKnowledgeBlock.querySelector(".block-content > div");
   inner.innerHTML = "";
-  knowledgeItems.forEach((text) => {
-    let summary = "";
-    const titleMatch = text.match(/^###\s+(.+)$/m);
-    if (titleMatch) summary = titleMatch[1];
-    else summary = text.substring(0, 50) + (text.length > 50 ? "…" : "");
+  knowledgeItems.forEach((item) => {
+    // item is now a structured dict: {text, title, icon, doc_type, memory_id, score}
+    const text = typeof item === "string" ? item : (item.text || "");
+    const icon = (item && item.icon) || "📄";
+    const title = (item && item.title) || "";
+    const docType = (item && item.doc_type) || "";
+    const memoryId = (item && item.memory_id) || "";
+    const score = (item && item.score != null) ? ` · ${(item.score * 100).toFixed(0)}%` : "";
+
+    // Build summary line: icon + title/type + score
+    let summaryLabel = "";
+    if (title) {
+      summaryLabel = `${icon} ${escapeHtml(title)}${score}`;
+    } else {
+      const short = text.substring(0, 60) + (text.length > 60 ? "…" : "");
+      summaryLabel = `${icon} ${escapeHtml(short)}${score}`;
+    }
+    if (memoryId) {
+      summaryLabel += ` <span style="color:#888;font-size:0.65rem;">[${escapeHtml(memoryId)}]</span>`;
+    }
+
     const itemDiv = document.createElement("div");
     itemDiv.className = "knowledge-item";
     const sumDiv = document.createElement("div");
     sumDiv.className = "knowledge-summary";
-    sumDiv.innerHTML = `📄 ${escapeHtml(summary)} <span style="font-size:0.7rem;">▼</span>`;
+    sumDiv.innerHTML = `${summaryLabel} <span style="font-size:0.7rem;">▼</span>`;
     const fullDiv = document.createElement("div");
     fullDiv.className = "knowledge-full";
     try {
       const html = marked.parse(text);
       fullDiv.innerHTML = html;
       wrapTables(fullDiv);
-      // Highlight code blocks inside knowledge items
       highlightCodeBlocks(fullDiv);
       renderMermaidBlocks(fullDiv);
       if (window.renderMathInElement) {
@@ -704,7 +719,7 @@ async function sendMessage() {
               }
               saveMessagesToLocalStorage();
             } else if (data.type === "knowledge") {
-              currentKnowledgeItems.push(data.text);
+              currentKnowledgeItems.push(data);
               updateKnowledgeBlock(assistantMsgDiv, currentKnowledgeItems);
             } else if (data.type === "confirmation_required") {
               addConfirmationBlock(
