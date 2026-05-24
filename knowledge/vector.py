@@ -29,7 +29,12 @@ from .config import (
     MEMORIES_SUMMARY_DIR, TOOLS_SUMMARY_DIR, SKILLS_SUMMARY_DIR,
     get_model,
 )
-from .summarizer import extract_summary_from_text, build_searchable_text
+from .summarizer import (
+    extract_summary_from_text,
+    build_searchable_text,
+    _extract_tool_summary_data,
+    _extract_skill_summary_data,
+)
 
 # ── Type → weight mapping (used by search.py) ─────────────────────────
 # Summary types are embedded instead of full documents.
@@ -223,7 +228,11 @@ def rebuild_fts_index():
 def _ensure_tool_summary(tool_name: str) -> str | None:
     """Get or generate a tool summary. Reads from tools_summary/ first,
     falls back to extracting from raw_tools/ and saving the result.
-    Regenerates if the raw file is newer than the cached summary."""
+    Regenerates if the raw file is newer than the cached summary.
+
+    Uses _extract_tool_summary_data() to parse structured tool markdown
+    into natural-language-like fields with Chinese labels.
+    """
     summary_path = TOOLS_SUMMARY_DIR / f"{tool_name}.summary.json"
     raw_path = RAW_TOOLS_DIR / f"{tool_name}.md"
 
@@ -244,29 +253,39 @@ def _ensure_tool_summary(tool_name: str) -> str | None:
                 pass
 
     text = raw_path.read_text(encoding="utf-8").strip()
-    text = re.sub(r"^<!--.*?-->", "", text, flags=re.DOTALL).strip()
     if not text:
         return None
 
-    result = extract_summary_from_text(text)
-    if result:
-        summary_data = {
-            "memory_id": f"tool:{tool_name}",
-            "title": tool_name,
-            "summary": result[:200],
-            "key_points": [result],
-            "tags": [],
-        }
-        summary_path.write_text(json.dumps(summary_data, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[Vector] Tool summary generated: {tool_name} ({len(result)} chars)", file=sys.stderr)
-        return build_searchable_text(summary_data)
-    return None
+    # Use structured extraction for tool documentation
+    summary_data = _extract_tool_summary_data(text, tool_name)
+    if summary_data is None:
+        # Fallback to generic extractive summary
+        fallback = extract_summary_from_text(text)
+        if fallback:
+            summary_data = {
+                "title": tool_name,
+                "summary": fallback[:200],
+                "key_points": [],
+                "tags": [],
+            }
+        else:
+            return None
+
+    summary_data["memory_id"] = f"tool:{tool_name}"
+    summary_path.write_text(json.dumps(summary_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    searchable = build_searchable_text(summary_data)
+    print(f"[Vector] Tool summary generated: {tool_name} ({len(searchable)} chars)", file=sys.stderr)
+    return searchable
 
 
 def _ensure_skill_summary(skill_name: str) -> str | None:
     """Get or generate a skill summary. Reads from skills_summary/ first,
     falls back to extracting from raw_skills/ and saving the result.
-    Regenerates if the raw file is newer than the cached summary."""
+    Regenerates if the raw file is newer than the cached summary.
+
+    Uses _extract_skill_summary_data() to parse skill markdown, strip
+    YAML frontmatter, and extract core principles as distinct key_points.
+    """
     summary_path = SKILLS_SUMMARY_DIR / f"{skill_name}.summary.json"
     raw_path = RAW_SKILLS_DIR / f"{skill_name}.md"
 
@@ -287,28 +306,38 @@ def _ensure_skill_summary(skill_name: str) -> str | None:
                 pass
 
     text = raw_path.read_text(encoding="utf-8").strip()
-    text = re.sub(r"^<!--.*?-->", "", text, flags=re.DOTALL).strip()
     if not text:
         return None
 
-    result = extract_summary_from_text(text)
-    if result:
-        summary_data = {
-            "memory_id": f"skill:{skill_name}",
-            "title": skill_name,
-            "summary": result[:200],
-            "key_points": [result],
-            "tags": [],
-        }
-        summary_path.write_text(json.dumps(summary_data, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[Vector] Skill summary generated: {skill_name} ({len(result)} chars)", file=sys.stderr)
-        return build_searchable_text(summary_data)
-    return None
+    # Use structured extraction that strips YAML frontmatter and extracts
+    # core principles from the skill document
+    summary_data = _extract_skill_summary_data(text, skill_name)
+    if summary_data is None:
+        fallback = extract_summary_from_text(text)
+        if fallback:
+            summary_data = {
+                "title": skill_name,
+                "summary": fallback[:200],
+                "key_points": [],
+                "tags": [],
+            }
+        else:
+            return None
+
+    summary_data["memory_id"] = f"skill:{skill_name}"
+    summary_path.write_text(json.dumps(summary_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    searchable = build_searchable_text(summary_data)
+    print(f"[Vector] Skill summary generated: {skill_name} ({len(searchable)} chars)", file=sys.stderr)
+    return searchable
 
 
 def _ensure_memory_summary(ts_name: str) -> str | None:
     """Get or generate a conversation summary from raw_memories/ backup.
-    Regenerates if the raw file is newer than the cached summary."""
+    Regenerates if the raw file is newer than the cached summary.
+
+    Extracts User/AI messages from the backup, generates a structured
+    summary with distinct key_points (not duplicated from summary).
+    """
     summary_path = MEMORIES_SUMMARY_DIR / f"{ts_name}.summary.json"
     raw_path = RAW_MEMORIES_DIR / f"{ts_name}.md"
 
@@ -343,11 +372,13 @@ def _ensure_memory_summary(ts_name: str) -> str | None:
     combined = f"User: {user_msg}\nAI: {ai_msg}"
     result = extract_summary_from_text(ai_msg or combined)
     if result:
+        # Use only the first 20 chars as title, summary as-is,
+        # and leave key_points empty to avoid duplication
         summary_data = {
             "memory_id": f"conv:{ts_name}",
             "title": result[:20],
             "summary": result[:200],
-            "key_points": [result],
+            "key_points": [],
             "tags": [],
         }
         summary_path.write_text(json.dumps(summary_data, ensure_ascii=False, indent=2), encoding="utf-8")
