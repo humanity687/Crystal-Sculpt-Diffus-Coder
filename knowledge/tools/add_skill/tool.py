@@ -57,14 +57,19 @@ def execute(name: str, content: str):
 
     # Remove old vector entries with the same source (handle updates)
     conn = sqlite3.connect(VECTOR_DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM vectors WHERE source = ?", (source_key,))
-    old_ids = cursor.fetchall()
-    for (old_id,) in old_ids:
-        cursor.execute("DELETE FROM fts WHERE rowid = ?", (old_id,))
-    cursor.execute("DELETE FROM vectors WHERE source = ?", (source_key,))
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM vectors WHERE source = ?", (source_key,))
+        old_ids = cursor.fetchall()
+        for (old_id,) in old_ids:
+            cursor.execute("DELETE FROM fts WHERE rowid = ?", (old_id,))
+        cursor.execute("DELETE FROM vectors WHERE source = ?", (source_key,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
     # Index summary into vector DB
     add_summary(
@@ -78,12 +83,14 @@ def execute(name: str, content: str):
     # Update file_versions to prevent re-indexing on restart
     mtime = filepath.stat().st_mtime
     conn = sqlite3.connect(VECTOR_DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO file_versions (path, mtime, last_updated) VALUES (?, ?, ?)",
-        (relative_path, mtime, time.time()),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO file_versions (path, mtime, last_updated) VALUES (?, ?, ?)",
+            (relative_path, mtime, time.time()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     return f"Skill '{safe_name}' saved and indexed successfully."

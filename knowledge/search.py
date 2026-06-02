@@ -16,26 +16,38 @@ Two-level summary memory system:
 """
 
 import sqlite3
+import sys
 import numpy as np
 import re
 import json
 
-from .config import VECTOR_DB_PATH, HYBRID_VECTOR_WEIGHT, HYBRID_FTS_WEIGHT, get_model
+from .config import VECTOR_DB_PATH, HYBRID_VECTOR_WEIGHT, HYBRID_FTS_WEIGHT, encode_single
 
 # ── Type weight mapping ──────────────────────────────────────────────
 TYPE_WEIGHTS = {
     # New summary types (two-level memory system)
-    "conversation_summary": 0.15,
+    "conversation_summary": 0.3,
     "tool_summary": 1.0,
     "skill_summary": 0.8,
+    "experience_crystal": 0.6,
     # Legacy full-document types (backward compat)
-    "conversation": 0.2,
+    "conversation": 0.3,
     "tool": 1.0,
     "skill": 0.8,
     "hyw": 1.0,
     # Fallback
     "generic": 1.0,
 }
+
+# Override from config.json if memory_weights is present
+try:
+    with open("config.json", "r", encoding="utf-8") as _f:
+        cfg = json.load(_f)
+    mw = cfg.get("memory_weights")
+    if isinstance(mw, dict):
+        TYPE_WEIGHTS.update(mw)
+except (FileNotFoundError, json.JSONDecodeError, OSError):
+    pass
 
 # ── Type icon mapping for display ────────────────────────────────────
 TYPE_ICONS = {
@@ -45,12 +57,13 @@ TYPE_ICONS = {
     "tool": "🔧 工具(旧)",
     "skill_summary": "📋 技能",
     "skill": "📋 技能(旧)",
+    "experience_crystal": "🧠 经验",
     "hyw": "📖 文档",
     "generic": "📄",
 }
 
 
-def search(query: str, k: int = 5) -> list[dict]:
+def search(query: str, k: int = 5, dim: str | None = None) -> list[dict]:
     """Retrieve the top k knowledge entries.
 
     Returns structured dicts for the two-level memory system.
@@ -60,22 +73,32 @@ def search(query: str, k: int = 5) -> list[dict]:
       - type: Document type (conversation_summary, tool_summary, etc.)
       - score: Combined RRF score
       - title: Extracted title from summary_json (if available)
+      - main_summary: From summary_json (if available)
+      - dimensions: List of {dim, summary} from summary_json (if available)
       - icon: Display icon string
+
+    If dim is specified, only results that have a matching dimension
+    in their summary_json are returned (hard filter after retrieval).
 
     Legacy callers that expect list[str] can use [r['text'] for r in results].
     """
     conn = sqlite3.connect(VECTOR_DB_PATH)
+    conn.execute("PRAGMA busy_timeout=5000")
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id, text, embedding, type, memory_id, summary_json FROM vectors"
-    )
+    try:
+        cursor.execute(
+            "SELECT id, text, embedding, type, memory_id, summary_json FROM vectors"
+        )
+    except sqlite3.OperationalError as e:
+        conn.close()
+        print(f"[Search] vectors table not available: {e}", file=sys.stderr)
+        return []
     rows = cursor.fetchall()
     conn.close()
     if not rows:
         return []
 
-    model = get_model()
-    q_emb = model.encode(query)
+    q_emb = encode_single(query)
 
     vector_scores = []
     for doc_id, text, emb_blob, doc_type, memory_id, summary_json in rows:
@@ -100,6 +123,7 @@ def search(query: str, k: int = 5) -> list[dict]:
         return cleaned
 
     conn_fts = sqlite3.connect(VECTOR_DB_PATH)
+    conn_fts.execute("PRAGMA busy_timeout=5000")
     cursor_fts = conn_fts.cursor()
     fts_query = clean_fts_query(query)
     if fts_query:
@@ -126,6 +150,7 @@ def search(query: str, k: int = 5) -> list[dict]:
     fts_data_map = {}
     if fts_rowids:
         conn_fts2 = sqlite3.connect(VECTOR_DB_PATH)
+        conn_fts2.execute("PRAGMA busy_timeout=5000")
         cursor_fts2 = conn_fts2.cursor()
         placeholders = ",".join("?" * len(fts_rowids))
         cursor_fts2.execute(
@@ -171,14 +196,24 @@ def search(query: str, k: int = 5) -> list[dict]:
 
         icon = TYPE_ICONS.get(doc_type, TYPE_ICONS["generic"])
 
-        # Extract title from summary_json if available
+        # Extract title, main_summary, dimensions from summary_json
         title = None
+        main_summary = None
+        dimensions = []
         if summary_json:
             try:
                 sj = json.loads(summary_json)
                 title = sj.get("title")
+                main_summary = sj.get("main_summary")
+                dimensions = sj.get("dimensions", [])
             except (json.JSONDecodeError, TypeError):
                 pass
+
+        # Dim filter: skip results that don't have the requested dimension
+        if dim and not any(
+            isinstance(d, dict) and d.get("dim") == dim for d in dimensions
+        ):
+            continue
 
         results.append({
             "memory_id": memory_id,
@@ -186,6 +221,8 @@ def search(query: str, k: int = 5) -> list[dict]:
             "type": doc_type,
             "score": round(score, 4),
             "title": title,
+            "main_summary": main_summary,
+            "dimensions": dimensions,
             "icon": icon,
         })
 
@@ -198,12 +235,32 @@ def search(query: str, k: int = 5) -> list[dict]:
             if text and text not in seen_texts:
                 seen_texts.add(text)
                 icon = TYPE_ICONS.get(doc_type or "generic", TYPE_ICONS["generic"])
+
+                title = None
+                main_summary = None
+                dimensions = []
+                if summary_json:
+                    try:
+                        sj = json.loads(summary_json)
+                        title = sj.get("title")
+                        main_summary = sj.get("main_summary")
+                        dimensions = sj.get("dimensions", [])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                if dim and not any(
+                    isinstance(d, dict) and d.get("dim") == dim for d in dimensions
+                ):
+                    continue
+
                 results.append({
                     "memory_id": memory_id,
                     "text": text,
                     "type": doc_type or "generic",
                     "score": 0.0,
-                    "title": None,
+                    "title": title,
+                    "main_summary": main_summary,
+                    "dimensions": dimensions,
                     "icon": icon,
                 })
                 if len(results) >= k:

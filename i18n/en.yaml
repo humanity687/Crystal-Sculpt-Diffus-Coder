@@ -14,9 +14,23 @@ chat:
   stopped: "(Stopped generating)"
   error: "Error: {message}"
   network_error: "Network error: {message}"
+  phase_rollback_title: "Phase Rollback"
+  phase_rollback_desc: "Workflow rolled back from {from} to {to}. Previous output needs to be revised. Last approved contract for the reverted module:"
+  rollback_contract: "Last Approved Contract"
+  module_label: "Module"
+  system_injection: "System Injection"
+  compression_title: "Context Compression"
+  compression_cut: "{count} cut"
+  compression_remaining: "{count} remaining"
+  compression_desc: "Context length exceeded limit — automatically compressed {cut} older messages, keeping {remaining}."
+  compression_hint: "Core context (phase guidance, crystal contracts, knowledge summaries) is preserved. Use TUI debug mode for full history."
+  project_inactive: "Project mode inactive"
 
 knowledge:
   title: "📚 Related Knowledge"
+
+crystal:
+  title: "Crystal Match"
 
 tool:
   using: "Using {name}..."
@@ -31,6 +45,7 @@ tool:
   rejected: "❌ Tool execution rejected"
   confirm_write_template: "path: {path}\nmode: {mode}\nstart_line: {startLine}\nend_line: {endLine}\n\ncontent:\n```\n{content}\n```"
   confirm_command_template: "```\n{command}\n```"
+  command_warning: "⚠️ HIGH RISK: This command may modify files or system state. Please review carefully before approving."
 
 config:
   header: "⚙️ Configuration"
@@ -42,6 +57,7 @@ config:
   thinking: "Deep Thinking"
   max_iterations: "Max Iterations"
   knowledge_k: "Knowledge Retrieval Count"
+  crystal_k: "Crystal Match Count"
   settings: "System Settings"
   ett_header: "📸 ETT (Multimodal) Tool Configuration"
   ett_api_key: "API Key (ett)"

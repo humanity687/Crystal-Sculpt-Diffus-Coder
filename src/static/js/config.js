@@ -187,6 +187,7 @@ async function loadConfig() {
       document.getElementById("temperature").value = config.temperature ?? 0.8;
       document.getElementById("thinking").checked = config.thinking ?? false;
       document.getElementById("knowledge_k").value = config.knowledge_k ?? 5;
+      document.getElementById("crystal_k").value = config.crystal_k ?? 3;
       const ett = config.tools?.ett || {};
       document.getElementById("ett_api_key").value = ett.api_key || "";
       document.getElementById("ett_model").value =
@@ -213,6 +214,7 @@ configForm.addEventListener("submit", async (e) => {
     temperature: parseFloat(document.getElementById("temperature").value),
     thinking: document.getElementById("thinking").checked,
     knowledge_k: parseInt(document.getElementById("knowledge_k").value),
+    crystal_k: parseInt(document.getElementById("crystal_k").value),
     tools: {
       ett: {
         api_key: document.getElementById("ett_api_key").value,

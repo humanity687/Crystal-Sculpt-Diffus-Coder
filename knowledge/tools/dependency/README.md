@@ -11,26 +11,28 @@ You should have received a copy of the GNU Affero General Public License along w
 The agent directly declares the module dependency structure, which is then analyzed, stored, and queried. The dependency graph becomes part of the engineering memory (DependencyGraphCrystal) and is automatically injected into context for downstream L3/L8 decisions.
 
 **Parameters:**
-- `command` (string, required): One of `"define"`, `"analyze"`, `"recommend"`, `"impact"`.
+- `command` (string, required): One of `"define"`, `"analyze"`, `"recommend"`, `"mark_done"`, `"impact"`.
 - `project_id` (string, required): Project identifier.
 - `modules` (list[string], for `define`): All module names in the project.
 - `dependencies` (dict[string, list[string]], for `define`): Dependency map `{module: [depends_on...]}`.
-- `completed` (list[string], for `recommend`): Modules whose dependencies are fully satisfied.
-- `module` (string, for `impact`): The module whose downstream impact to assess.
+- `completed` (list[string], for `recommend`, optional): Modules whose dependencies are fully satisfied. Omit to auto-derive from stored `module_status`.
+- `module` (string, for `mark_done` / `impact`): The target module.
 
 **Sub-commands:**
 
 | Command | Trigger | What it does |
 |---------|---------|-------------|
 | `define` | After L2 approval (primary) | Agent declares modules + dependencies directly. Builds graph, detects cycles, stores `DependencyGraphCrystal`, returns Mermaid diagram + module status table |
-| `analyze` | After L2 approval (fallback) | Reads ModMap crystals and reconciles the graph from stored data. Use when ModMap crystals already exist |
-| `recommend` | Before starting L3 for a module | Given `completed` list, returns modules whose dependencies are all satisfied and ready to implement |
+| `analyze` | After L2 approval (fallback) | Reads ModMap crystals and reconciles the graph from stored data |
+| `recommend` | Before starting L3 for a module | Returns modules whose dependencies are all satisfied and ready to implement. `completed` list is optional — auto-derived from `module_status` when omitted |
+| `mark_done` | After L7 approval for a module | Marks the module as implemented in `DependencyGraphCrystal.module_status`, then auto-recommends newly ready modules. No need to manually track `completed` |
 | `impact` | L3.1 renegotiation / L8 backtracking | Given a changed module, BFS-traces all downstream affected modules |
 
 **When to use:**
-- **define**: Immediately after the user approves L2 module decomposition — the agent declares the dependency structure it just designed. This is the **primary entry point**. The Mermaid diagram and cycle warnings become part of the approval record.
-- **analyze**: Fallback when ModMap crystals are already stored and the agent wants to reconcile the graph from persisted data. Most projects should use `define`.
-- **recommend**: Before starting L3 for each module, to confirm all its dependencies have been contracted (or implemented).
+- **define**: Immediately after the user approves L2 module decomposition — the agent declares the dependency structure it just designed. This is the **primary entry point**.
+- **analyze**: Fallback when ModMap crystals are already stored and the agent wants to reconcile the graph.
+- **recommend**: Before starting L3 for each module, to confirm all its dependencies have been contracted.
+- **mark_done**: After L7 approval for each module. **This is the primary way to advance the implementation pipeline** — the tool tracks what's done and tells you what's next. No manual `completed` list needed.
 - **impact**: When L3.1 contract renegotiation is triggered, or when an L8 bug's root cause may affect downstream modules.
 
 **When NOT to use:**
@@ -48,6 +50,16 @@ dependency(
 )
 ```
 
+**Example — `mark_done`:**
+```
+dependency(
+    command="mark_done",
+    project_id="my-app",
+    module="Auth"
+)
+```
+Returns: Auth marked implemented. Now ready: API (all deps satisfied).
+
 **Output format:**
 
 All sub-commands return Markdown with structured sections. `define` and `analyze` include:
@@ -55,3 +67,8 @@ All sub-commands return Markdown with structured sections. `define` and `analyze
 - Topological implementation order (or cycle warnings)
 - Module status table (✅ implemented / 📝 contracted / ⏳ pending)
 - Crystal ID of the stored `DependencyGraphCrystal`
+
+`mark_done` returns:
+- Module status change (pending → implemented ✅)
+- Completed modules list
+- Newly ready modules (or "All modules implemented!" when done)

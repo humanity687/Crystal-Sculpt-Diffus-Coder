@@ -5,100 +5,214 @@
 # You should have received a copy of the GNU Affero General Public License along with FranxAgent.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-Write Tool - Proposal Mode
+Write Tool — Proposal Mode
 
-The write tool no longer performs any file operations on disk. Instead, it
-computes the final file content that would result from applying the AI's
-suggested changes, and returns this complete file content as a proposal string.
+The write tool does NOT write to disk. It computes the new file content that
+would result from applying the AI's changes, generates a unified diff, and
+returns both separated by `---FILE_CONTENT---`.
 
-The frontend displays this content in a code review panel where the user can
-inspect the diff, edit the code, and then approve the changes. Upon approval,
-the frontend writes the file and returns the final content back to the AI so
-it can continue the conversation with the latest file state.
+The frontend sends the full content (after separator) to the code review panel.
+The agent stores only the diff/structure (before separator) in message history.
+
+Modes:
+  - overwrite: create or fully replace a file
+  - edit:      delete a line range then insert new content at that position
+  - replace:   exact string replacement with expected_replacements safety check
+  - insert:    insert content after a specified line
 """
 
+import difflib
 from pathlib import Path
 
 
-def execute(path: str, content: str, mode="overwrite", start_line=0, end_line=0) -> str:
+# ---------------------------------------------------------------------------
+#  Diff helpers
+# ---------------------------------------------------------------------------
+
+def _unified_diff(original: str, modified: str, path: str) -> str:
+    """Generate a compact unified diff (n=2 context lines)."""
+    original_lines = original.splitlines(keepends=True)
+    modified_lines = modified.splitlines(keepends=True)
+
+    if original_lines and not original_lines[-1].endswith("\n"):
+        original_lines[-1] += "\n"
+    if modified_lines and not modified_lines[-1].endswith("\n"):
+        modified_lines[-1] += "\n"
+
+    diff = difflib.unified_diff(
+        original_lines,
+        modified_lines,
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+        n=2,
+    )
+    return "".join(diff)
+
+
+def _format_result(agent_part: str, full_content: str) -> str:
+    """Combine agent-facing result and frontend content with separator."""
+    return agent_part + "\n\n---FILE_CONTENT---\n" + full_content
+
+
+# ---------------------------------------------------------------------------
+#  execute
+# ---------------------------------------------------------------------------
+
+def execute(
+    path: str,
+    mode: str = "overwrite",
+    # overwrite
+    content: str = "",
+    # edit
+    start_line: int = 0,
+    end_line: int = 0,
+    new_content: str = "",
+    # replace
+    old_string: str = "",
+    new_string: str = "",
+    expected_replacements: int = 1,
+    # insert
+    after_line: int = 0,
+) -> str:
+    """Compute the result of a file modification without writing to disk.
+
+    Returns a string with two parts separated by `---FILE_CONTENT---`:
+      - First part (for agent history): unified diff or AST structure
+      - Second part (for frontend review): the complete modified file content
+
+    Modes:
+      - "overwrite": create or fully replace. Requires: content.
+      - "edit": delete [start_line, end_line] then insert new_content.
+          Requires: start_line, end_line, new_content.
+      - "replace": find old_string and replace with new_string.
+          Uses expected_replacements (default 1) as safety guard.
+          Requires: old_string, new_string.
+      - "insert": insert new_content after after_line (0 = file start).
+          Requires: after_line, new_content.
     """
-    Compute and return the complete file content after applying the AI's changes.
+    p = Path(path).expanduser().resolve()
 
-    This function does NOT write to disk. It reads the original file (if it
-    exists), applies the requested modification, and returns the resulting
-    complete file content as a plain string.
-
-    @param path: Full path of the target file.
-    @param content: The content to be written/inserted/replaced.
-    @param mode: Write mode --- "overwrite", "append", or "edit".
-    @param start_line: Start line number for edit mode (1-based, inclusive).
-                       For append mode with start_line>0, insert after this line.
-    @param end_line: End line number for edit mode (1-based, inclusive).
-    @returns: The complete file content after applying the requested change.
-    """
-    file_path = Path(path).expanduser().resolve()
-
-    # Read original file content (empty string if file does not exist)
+    # Read original file
     try:
-        original_content = file_path.read_text(encoding="utf-8")
-        original_lines = original_content.split("\n")
-    except (FileNotFoundError, PermissionError):
-        original_content = ""
+        original_content = p.read_text(encoding="utf-8")
+        original_lines = original_content.split("\n") if original_content else []
+    except FileNotFoundError:
+        original_content = None
         original_lines = []
+    except PermissionError:
+        return f"Error: Cannot read file: Permission denied - {path}"
 
+    # ======================================================================
+    #  overwrite
+    # ======================================================================
     if mode == "overwrite":
-        # Replace entire file content
-        return content
+        if not content:
+            return "Error: 'content' parameter is required for overwrite mode"
 
-    elif mode == "append":
-        if start_line <= 0:
-            # Legacy append to end of file
-            if original_content and not original_content.endswith("\n"):
-                return original_content + "\n" + content
-            return original_content + content
+        if original_content is not None:
+            diff = _unified_diff(original_content, content, path)
+            agent_part = f"```diff\n{diff}```"
         else:
-            # Insert content after the specified line
-            if not original_lines:
-                return content
-            total_lines = len(original_lines)
-            # Determine insertion index: after start_line
-            if start_line >= total_lines:
-                insert_idx = total_lines  # after last line
-            else:
-                insert_idx = start_line  # 1‑based → index = start_line
-            new_lines = (
-                original_lines[:insert_idx]
-                + content.split("\n")
-                + original_lines[insert_idx:]
+            new_lines = content.count("\n") + (0 if content.endswith("\n") else 1)
+            new_bytes = len(content.encode("utf-8"))
+            agent_part = f"New file: {new_lines} lines, {new_bytes} bytes"
+
+        return _format_result(agent_part, content)
+
+    # ======================================================================
+    #  All modes below require an existing file
+    # ======================================================================
+    if original_content is None:
+        return f"Error: File not found: {path}. Use mode='overwrite' to create a new file."
+
+    total_lines = len(original_lines)
+
+    # ======================================================================
+    #  edit
+    # ======================================================================
+    if mode == "edit":
+        if start_line < 1 or end_line < start_line:
+            return (
+                f"Error: start_line ({start_line}) and end_line ({end_line}) "
+                f"must be >= 1 and start_line <= end_line"
             )
-            return "\n".join(new_lines)
+        if start_line > total_lines:
+            return (
+                f"Error: start_line ({start_line}) exceeds file length "
+                f"({total_lines} lines)"
+            )
 
-    elif mode == "edit":
-        # Replace lines start_line through end_line with new content
-        if not original_content:
-            # Editing an empty file: just return the content as the new file
-            return content
+        actual_end = min(end_line, total_lines)
+        clamp_note = ""
+        if end_line > total_lines:
+            clamp_note = f" (end_line clamped from {end_line} to {total_lines})"
+        start_idx = start_line - 1
+        end_idx = actual_end  # slicing, exclusive upper bound
 
-        total_lines = len(original_lines)
-
-        # Clamp line numbers to valid range
-        start = max(1, start_line)
-        end = min(end_line, total_lines) if end_line > 0 else total_lines
-
-        if start > total_lines:
-            # start_line beyond file end: append after a blank line
-            return original_content + "\n" + content
-
-        # Convert to 0-based indices
-        start_idx = start - 1
-        end_idx = end  # slicing is exclusive on the upper bound
-
-        # Build the new file content
         new_lines = (
-            original_lines[:start_idx] + content.split("\n") + original_lines[end_idx:]
+            original_lines[:start_idx]
+            + new_content.split("\n")
+            + original_lines[end_idx:]
         )
-        return "\n".join(new_lines)
+        result_content = "\n".join(new_lines)
 
-    else:
-        # Unknown mode, return content unchanged
-        return content
+        diff = _unified_diff(original_content, result_content, path)
+        agent_part = f"```diff\n{diff}```{clamp_note}"
+        return _format_result(agent_part, result_content)
+
+    # ======================================================================
+    #  replace
+    # ======================================================================
+    if mode == "replace":
+        if not old_string:
+            return "Error: 'old_string' parameter is required for replace mode"
+
+        count = original_content.count(old_string)
+        if count == 0:
+            return (
+                f"Error: old_string not found in file. "
+                f"The provided text does not appear anywhere in {path}. "
+                f"Re-read the file to get the exact current content, then retry."
+            )
+        if count != expected_replacements:
+            return (
+                f"Error: expected {expected_replacements} occurrence(s) of old_string, "
+                f"but found {count}. Adjust expected_replacements or provide a more "
+                f"specific old_string that matches the intended location."
+            )
+
+        result_content = original_content.replace(old_string, new_string, 1)
+        diff = _unified_diff(original_content, result_content, path)
+        agent_part = f"```diff\n{diff}```"
+        return _format_result(agent_part, result_content)
+
+    # ======================================================================
+    #  insert
+    # ======================================================================
+    if mode == "insert":
+        if not new_content:
+            return "Error: 'new_content' parameter is required for insert mode"
+        if after_line < 0 or after_line > total_lines:
+            return (
+                f"Error: after_line ({after_line}) must be between "
+                f"0 and {total_lines}"
+            )
+
+        insert_lines = new_content.split("\n")
+        if after_line == 0:
+            new_lines = insert_lines + original_lines
+        elif after_line == total_lines:
+            new_lines = original_lines + insert_lines
+        else:
+            new_lines = (
+                original_lines[:after_line]
+                + insert_lines
+                + original_lines[after_line:]
+            )
+
+        result_content = "\n".join(new_lines)
+        diff = _unified_diff(original_content, result_content, path)
+        agent_part = f"```diff\n{diff}```"
+        return _format_result(agent_part, result_content)
+
+    return f"Error: Unknown mode '{mode}'. Supported: overwrite, edit, replace, insert."

@@ -52,11 +52,13 @@ def detect_cycles(graph: dict[str, list[str]]) -> list[list[str]]:
                 continue  # External dependency, skip
             if color[neighbor] == 1:
                 # Back edge found — extract cycle
-                cycle = [neighbor, node]
+                cycle = [neighbor]
+                path = []
                 cur = node
-                while parent.get(cur) is not None and parent[cur] != neighbor:
+                while cur != neighbor:
+                    path.append(cur)
                     cur = parent[cur]
-                    cycle.append(cur)
+                cycle.extend(reversed(path))
                 cycle.append(neighbor)
                 cycles.append(cycle)
             elif color[neighbor] == 0:
@@ -79,10 +81,13 @@ def topological_sort(graph: dict[str, list[str]]) -> list[str]:
     Returns partial order if cycles exist (drops nodes involved in cycles).
     """
     in_degree: dict[str, int] = {n: 0 for n in graph}
+    missing_deps: set[str] = set()
     for node in graph:
         for dep in graph[node]:
             if dep in in_degree:
-                in_degree[dep] += 1
+                in_degree[node] += 1
+            else:
+                missing_deps.add(dep)
 
     queue: deque[str] = deque(n for n, d in in_degree.items() if d == 0)
     result: list[str] = []

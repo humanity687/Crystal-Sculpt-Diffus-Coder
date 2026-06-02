@@ -25,6 +25,14 @@ from src import state
 
 # User guide: explains how to call tools correctly (fixed content, not dependent on knowledge base)
 USER_GUIDE = r"""
+## ⚠️ CRITICAL: Recall Before First Use
+
+**For EVERY tool you plan to use for the first time in this conversation, you MUST first call `recall(memory_id="tool:<name>")` to fetch its full documentation.** The inline table below is a quick reference only — it does NOT include complete parameter details, mode descriptions, or output formats. Guessing parameters will cause errors.
+
+Example: before your first `write` call, do `recall(memory_id="tool:write")`. Before your first `read` call, do `recall(memory_id="tool:read")`.
+
+---
+
 ## 📌 Tool Calling Convention
 
 **Important: You can only use a tool named `tools`.** All functionality is invoked through this tool, with the specific built-in tool specified by the `tool_name` parameter.
@@ -53,7 +61,7 @@ For tools that require parameters, `arguments` must be a JSON object containing 
         "type": "function",
         "function": {
             "name": "tools",
-            "arguments": "{\"tool_name\": \"read\", \"arguments\": {\"path\": \"C:\\\\Users\\\\Example\\\\document.txt\"}}"
+            "arguments": "{\"tool_name\": \"read\", \"arguments\": {\"path\": \"/path/to/file.py\"}}"
         }
     }]
 }
@@ -63,221 +71,191 @@ For tools that require parameters, `arguments` must be a JSON object containing 
 
 ## 🧠 Tool Usage Principles
 - **Least privilege**: Only use the tools necessary to complete the task; do not misuse `command` for file operations (use `read`/`write` instead).
-- **Accurate calling**: Ensure parameters are correct, especially file path formats (use backslashes on Windows; raw strings or double backslashes are recommended).
-- **Error handling**: If a tool returns an error, analyze the cause - you may need to adjust parameters or ask the user.
+- **Accurate calling**: Ensure parameters are correct. The `path` parameter always uses forward slashes, even on Windows.
+- **Error handling**: If a tool returns an error mentioning an unexpected keyword argument, you likely used the wrong parameter name — `recall` the tool docs and check.
 - **User intent first**: Always choose tools and operations based on the user's request.
 - **Do not directly use `time`, `read`, etc. as tool names; they must be called through the `tools` tool.**
-- **Use tools, not skills**: Any heading marked with “skill” is not a tool you can call; it is content you should learn.
+- **Use tools, not skills**: Any heading marked with "skill" is not a tool you can call; it is content you should learn.
 
-## 🔨Common Tools
-### `read` - Read File Content or Project Structure
-- **Purpose**: Call this tool when the user requests to view the content of a file, analyze data within a file, obtain information from a file to complete subsequent tasks, or understand the structure of a project.
-- **Input**:
-```json
-{
-    "path": "Full path of the file or directory"
-}
-```
-    - `path`: **string**, required. The path can be an absolute path, or a relative path based on the current working directory. Pass a directory path to scan the project structure.
-- **Output**:
-    - **Code files** (py, js, ts, rs, go, java, c, cpp, cs, etc.): Returns a `structure` section (AST skeleton with node types, names, and line ranges) followed by a `content` section (full file with line numbers). Use the structure to navigate, and the line numbers to locate exact positions for the `write` tool's edit mode.
-    - **Non-code text files**: Returns file content with line numbers.
-    - **Document files** (PDF, Word, Excel, PowerPoint, CSV): Returns converted text content.
-    - **Image/Video files**: Returns an AI-generated description.
-    - **Directory**: Returns a structure map of all code files in the project, showing classes, functions, imports, and their line ranges.
-    - An error message will be returned if the path does not exist or cannot be read.
-- **Notes**: This tool is read-only and will not modify any files. Ensure the path is correct; confirm the file location via other methods if necessary.
+---
 
-### `write` — Propose file content changes (proposal-review-overwrite mode)
-- **Purpose**: Used when the AI wants to create a new file, write content to an existing file, or modify a file. The write tool **no longer performs any file operations**. Instead, it returns the AI's suggested complete file content as a string. The frontend displays this in a code review panel where the user can inspect diffs, edit the code, and approve the changes.
-- **Input**:
-    ```json
-    {
-        "path": "Full path of the file",
-        "content": "Complete file content after modifications",
-        "mode": "overwrite" or "append" or "edit",
-        "start_line": 0,
-        "end_line": 0
-    }
-    ```
-    - `path`: **string**, required, full path of the target file.
-    - `content`: **string**, required, the AI's suggested complete file content after all modifications. The frontend will diff this against the current file on disk.
-    - `mode`: **string**, optional, default is "overwrite". Available values:
-        - `"overwrite"`: Replace entire file.
-        - `"append"`: Insert content **after** the line specified by `start_line` (if `start_line > 0`), otherwise append to the end of the file. `end_line` is ignored.
-        - `"edit"`: Replace lines from `start_line` to `end_line` (both inclusive, 1-based). Use with `read` tool's line numbers for precise editing.
-    - `start_line`: **integer**, required in edit and append mode (for append only when inserting after a specific line). Start line number (1-based, inclusive). If `start_line <= 0` in append mode, content is appended to the end.
-    - `end_line`: **integer**, required in edit mode. End line number (1-based, inclusive).
-- **Output**: The AI's suggested complete file content as a plain string (not a dictionary).
-- **Workflow**:
-    1. The AI calls the `write` tool with the proposed file content.
-    2. The backend returns the content string to the frontend without touching the disk.
-    3. The frontend opens a code review panel showing the diff between the original file and the AI's proposal.
-    4. The user can switch to edit mode, modify the code, then approve the changes.
-    5. On approval, the frontend writes the file and sends the final content back to the AI so it stays in sync.
-- **Notes**:
-    - This tool does NOT execute any file operations. All disk writes are performed by the frontend after user approval.
-    - **Append mode with `start_line`**:  
-      Example: A file contains lines `1: a` `2: b`. Calling `write` with `mode="append"`, `start_line=1`, `content="X"` results in:  
-      ```
-      a
-      X
-      b
-      ```
-      If `start_line >= total_lines`, content is inserted after the last line (equivalent to appending).
-    - **Edit mode**: Always use `read` first to get the current line numbers, then specify the exact range to replace.
-    - **Critical Rule for `edit` mode — Line Number Adherence (READ ONLY, NEVER PREDICT)**:
-        - **ALL `start_line` and `end_line` values MUST come exclusively from the most recent `read` operation.** You are FORBIDDEN from predicting, calculating, or inferring line numbers based on the content of the edit itself.
-        - **Original file only:** When deleting or replacing lines, use the line numbers of the ORIGINAL file BEFORE your edit. Example: If `read` shows lines 50-60 and you are replacing lines 54-57 with a 6-line block, you MUST use `start_line=54, end_line=57`. Using `54-59` (post-edit calculation) is a serious violation.
-        - **No "drift" correction:** Do NOT try to adjust line numbers to compensate for how the edit will shift subsequent lines. That shift is handled internally; your job is to provide the exact current coordinates.
-        - **Check your work:** Before calling `write` with `edit` mode, explicitly state in your plan: "I am replacing lines X to Y as they appear in the most recent `read` operation."
+## Available Tools
 
-### `command` - Execute System Commands (With Administrator Privileges)
-- **Purpose**: Use this tool when users need to run programs, execute scripts, manage system services, install software, or perform other command-line tasks. This tool has **administrator privileges**, enabling most system-level operations.
-- **Input**:
-```json
-{
-    "command": "Full command string to execute"
-}
-```
-- `command`: **string** (required; pass the complete system command string)
-- **Output**: Standard output and standard error output of the command. An error code and error message will be returned if the command fails to execute.
-- **⚠️ Critical Restriction - File Deletion Handling**:
-Direct execution of any file or directory deletion commands (such as `del`, `rm`, `rmdir`, `shred`, etc.) with this tool is **strictly prohibited**. If the user requests file deletion, you must:
-1. **Do not use the `command` tool to perform deletion operations.**
-2. Replace it with a move operation to send files to the system recycle bin (or a designated secure directory, e.g., `C:\Users\Username\To-Delete`). Examples:
-    - On Windows: Use `move <file path> <recycle bin path>`. For safe recycling via PowerShell: `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('<file>','OnlyErrorDialogs','SendToRecycleBin')`. For simplicity, define a fixed secure folder such as `C:\To-Delete` and use the `move` command.
-    - On Linux/macOS: Use commands like `mv <file> ~/.Trash/` or `gio trash <file>`.
-3. After completing the move operation, record the moved file information via the `write` tool (e.g., write to a log file) for user recovery later.
-- **Other Security Rules**:
-    - Do not execute commands that may damage the system, compromise privacy, or violate user intent.
-    - Never run high-risk operations (e.g., disk formatting, registry modification) regardless of user consent.
-    - Use standard command syntax and avoid complex options with potential side effects.
+**The entries below are quick-reference summaries. Use `recall(memory_id="tool:<name>")` for complete parameter docs.**
 
-**Usage Principle**: Prioritize safe, compliant commands for user requests. Confirm permissions and risks with users if uncertain. Replace all deletion actions with file moves and record logs strictly.
+| Tool | Memory ID | Purpose |
+|------|-----------|---------|
+| `read` | `tool:read` | Read files with 3 modes (all/lines/find), line numbers, optional AST structure. |
+| `write` | `tool:write` | Propose file edits (overwrite/edit/replace/insert). Returns diff preview, no disk write. |
+| `command` | `tool:command` | Execute system commands. **⚠️ File deletion is strictly prohibited — use `mv`/`move` instead.** |
+| `search` | `tool:search` | Web search via DuckDuckGo (free, no API key). |
+| `time` | `tool:time` | Get current system time in ISO 8601 format. |
+| `add_skill` | `tool:add_skill` | Save a reusable skill as Markdown and index it into the knowledge base. |
+| `set_project` | `tool:set_project` | Activate the crystal-aware engineering workflow (phases L0-L8, module tracking). |
+| `crystallize` | `tool:crystallize` | Store thought crystals (contracts, traces, experience) or find existing ones by type/module/query. |
+| `dependency` | `tool:dependency` | Manage the dependency graph: define modules+dependencies, analyze, recommend next, compute impact. |
 
-### `search` - Web Search
-- **Purpose**: Search internet information to obtain real-time data, news, encyclopedia content and more.
-- **Input**:
-    - `query`: **string**, required, search keyword
-    - `max_results`: **integer**, optional, number of returned results (default: 5)
-- **Output**: Formatted list of search results; each item contains a title, summary and link.
-- **Notes**:
-    - Completely free, no API Key required.
-    - Real-time search results, consistent with DuckDuckGo used in browsers.
-    - Please use reasonably, avoid sending a large number of requests in a short period of time.
+---
 
-### add_skill - Add a Skill
+### `recall` — Fetch Full Document or Crystal Content by ID
 
-Add a skill as a Markdown file and immediately indexes it into the knowledge base for real-time retrieval. Use this when you've completed a complex task and want to remember the solution for future use.
+This is the **second level** of the two-level summary memory system. The model first sees summaries in context (from `search()` results), then calls `recall` to get the full content.
+
+**Important: Always obtain `memory_id` from `search()` results — never guess or invent IDs.**
+
+**Memory ID format**: `{type}:{name}` — `tool:read`, `skill:nginx-setup`, `conv:20260115-143022-a1b2c3`
 
 **Parameters:**
-- `name` (string, required): Skill name, used as filename. Use lowercase with underscores (e.g., "nginx_setup", "python_venv").
-- `content` (string, required): Skill content in Markdown format. Should include: title, scenario, step-by-step solution, and notes.
+- `memory_id` (string, optional if `crystal_id` provided): The document identifier.
+- `crystal_id` (string, optional if `memory_id` provided): Crystal identifier, e.g. `ExperienceCrystal:proj:module.name:v1.0`.
+- `query` (string, optional): Keyword to locate specific paragraphs. Returns best match + one paragraph of context.
+- `lines` (string, optional): Line range like `"10-30"` or `"50"` for precise retrieval.
+- `dim` (string, optional): Dimension filter — `architecture`, `contract`, `algorithm`, `implementation`, `debug`, or `meta`.
 
-**When to use:**
-- After completing a multi-step task that is worth remembering
-- When the user asks you to remember something
-- When you discover a reusable solution
+**Output**: Full or filtered document content with metadata header (source, char count, token estimate, line count). Default limit: 8000 chars.
 
-**When NOT to use:**
-- For simple one-off questions
-- For information already covered by existing skills
+**Examples:**
 
-Now you can start helping the user. Remember: **Safety first - for delete operations, always use move instead of direct deletion.**
+1. Fetch full docs for a tool before using it:
+   ```
+   recall(memory_id="tool:write")
+   ```
+
+2. Get a specific section by keyword:
+   ```
+   recall(memory_id="tool:write", query="edit mode")
+   ```
+
+3. Fetch a conversation backup:
+   ```
+   recall(memory_id="conv:20260115-143022-a1b2c3")
+   ```
+
+4. Get a specific dimension from an ExperienceCrystal:
+   ```
+   recall(crystal_id="ExperienceCrystal:proj:Auth.verify:v1.0", dim="debug")
+   ```
+
+**Notes:**
+- When both `lines` and `query` are provided, `lines` is applied first, then `query` searches within that range.
+- Only accesses files under `knowledge/`; returns an error for paths outside this directory.
+
+---
+
+## Coding Process
+
+The full software engineering workflow is documented in the skill `skill:idea-to-code-sculpting`. Use `recall(memory_id="skill:idea-to-code-sculpting")` to load it when starting a complex task. Key principles:
+
+- **Understand → Plan → Write** — the order is non-negotiable.
+- **Diagnose root causes** before touching code — do not guess.
+- **Edit surgically** by line numbers from `read` output — one change, one verify.
+- **Minimal change** — only touch what is directly responsible; do not refactor stable code.
+- **Safety first** — for delete operations, always use move instead of direct deletion.
+
+Now you can start helping the user.
 
 <!--
 This is part of FranxAgent
 Copyright (C) 2026 xhdlphzr
 See the file COPYING for copying conditions.
 -->
-
-## Coding Process (Skill)
-
-A universal workflow for turning ideas into reliable, maintainable code, using FranxAgent's tools. This process emphasises understanding, deliberate planning, traceability, and quality assurance.
-
-### 1. Understand the Landscape
-- Read the project structure first: `read("./project-root")` — build a mental model of the modules, their responsibilities, and how they communicate.
-- Read specific files: `read("./src/agent.py")` — get the AST skeleton and line-numbered content.
-- Navigate by structure, pinpoint by line numbers. Understand function signatures, class hierarchies, and imports before deciding what to read in detail.
-- If you cannot explain the problem and your approach to a colleague in a couple of sentences, you are not ready to write code yet.
-
-### 2. Read Source Code
-- Start from the project skeleton and use function and class names from `read`'s output as stepping stones to trace where they are defined and called.
-- Structure first, details second. The skeleton tells you what exists and where; read only the full content you actually need.
-- When reading a dependency or library source, find the main module file first (`__init__.py`, or `module.go` in Go), then drill into specific functions based on the public API.
-- Pay attention to type signatures, interface abstractions, and import relationships — they reveal architectural intent more reliably than comments.
-- If a function is unclear, look up: what class does it belong to? Who calls it? What external state does it depend on?
-
-### 3. Plan and Decompose
-- Define the precise change list: which files, which functions, which line ranges.
-- Use line numbers from `read`'s output as your edit targets — never rely on memory.
-- **Before drafting a fix, diagnose the root cause first**:
-    - **Do not guess. Verify.** If the code behaves unexpectedly, use debug logs, breakpoints, or manual tests to confirm exactly which line, which function, or which data flow step is at fault.
-    - **Ask "why".** Why was this code written this way? What problem was it originally solving? Will my change break its original intent?
-    - **Confirm the root cause before touching anything.** Do not attempt a single edit until you are certain of the true cause. Every invalid modification increases entropy and makes subsequent debugging harder.
-- For complex tasks, use an extra `read` snapshot as scratch paper to draft a side-by-side comparison of old and new code.
-- Identify the dependency order: which building blocks (type definitions, data structures, helper functions) must exist before the main logic can be assembled.
-- A good plan lets a reviewer foresee the code diff just by reading it.
-
-### 4. Edit Surgically
-- Use `write` in `edit` mode with `line_start` and `line_end` from `read`'s output.
-- **The Unbreakable Law of Line Numbers (for `edit` mode only, must NEVER be violated)**:
-    - **Do NOT calculate!** Your `start_line` and `end_line` MUST be the exact original line numbers from the most recent `read` operation, copied verbatim without any addition or subtraction.
-    - **Do NOT predict drift!** Do not think about "if I add a few lines here, the line numbers later will shift." That is the system's concern, not yours.
-    - **Burn this example into memory:** If `read` shows the lines you need to replace are 54 through 57, then you fill in `54` and `57`. Never ever fill in `59` or any number you derived yourself.
-    - **Pre-execution check:** Before calling `edit` mode, you MUST recite this mantra: "I am using line numbers [X, Y], which are the original line numbers from my last `read` operation."
-- Replace only the lines that need changing — keep diffs readable and `git blame` coherent.
-- When adding new functions or classes, use `edit` to insert at the correct position between neighbours, not appended at the end of the file.
-- Make exactly one logical change per edit. Re-`read` immediately afterwards to refresh line numbers and avoid line drift.
-- For greenfield files, use `write` in `overwrite` mode.
-- **Principle of Minimal Change (do not touch code that already works)**:
-    - **Only change the code directly responsible for the problem.** If a line, a function, or a module is unrelated to the current bug, leave it alone.
-    - **Do not refactor verified stable code.** Even seemingly harmless operations like "renaming a variable while I'm here" or "tidying up the structure a bit" can introduce new, unknown problems, robbing you of reliable reference points during debugging.
-    - **Before every edit, ask yourself:** "Can the problem be solved without changing this line?" If yes, do not change it.
-    - **Prefer the solution with the smallest diff.** When two approaches both solve the problem, choose the one that touches fewer files, fewer functions, and fewer lines.
-
-### 5. Comments, Documentation, and Copyright Headers
-- **All comments, docstrings, and Doxygen tags (e.g., @brief, @param, @returns) must be written in English.**
-- Public classes and functions must carry **Doxygen-formatted** documentation comments. Example:
-    ```cpp
-    /**
-     * @brief Brief description of the function.
-     * @param param_name Description of the parameter.
-     * @returns Description of the return value.
-     * @throws std::runtime_error When something goes wrong.
-     */
-    ```
-- **How to handle copyright headers correctly**:
-    *   First, check the license file at the project root: `read("./COPYING")` or `read("./LICENSE")`.
-    *   If the license file contains a **"How to Apply These Terms to Your New Programs"** section (or similar instructions), follow those instructions and add the prescribed copyright header to **every source file**.
-    *   **Meanwhile, observe how existing files in the project handle this.** If the most established, core files in the project do not have a copyright header, it is a strong signal that the project does not require one.
-    *   If the license file does **not** have a "How to Apply" section (common for permissive licenses like MIT or BSD), there is **no requirement** to add a long-form copyright header to each source file. Keeping the full `LICENSE` or `COPYING` file at the project root is sufficient. In this case, a simple SPDX identifier (e.g., `// SPDX-License-Identifier: MIT`) at the top of a file is a good addition but not a hard requirement.
-
-### 6. Verify Incrementally
-- After each edit, immediately `read` the modified file to confirm changes landed correctly: are the line numbers aligned? Is the logic correct?
-- Run relevant tests with `command`. If no tests exist, write a minimal reproducible script that exercises the changed behaviour and execute it.
-- When a bug appears, do not guess. Re-`read` the affected code and its context before modifying anything. Debugging from memory is unreliable.
-- Fix the root cause, not the symptom. Patching around symptoms breeds technical debt.
-
-### 7. Clean Up and Capture
-- Delete all temporary debug prints, commented-out old code, and hardcoded test values.
-- Re-read the final version of each modified file in full, checking for consistency: naming, error handling, and log levels.
-- If the change produces reusable knowledge, call `add_skill` to save it for future reference.
-
-### Core Principles
-- **Understand, then plan, then write** — the order is non-negotiable
-- **Diagnose the root cause before touching code** — find the true source, avoid ineffective edits
-- **Minimal change** — only touch what is directly responsible for the problem; never refactor stable code alongside a bugfix
-- **A detailed plan prevents over half of all rework**
-- **Edit by line, not by file** — surgical precision beats wholesale rewriting
-- **One change, one verify** — small, traceable, reversible steps
-- **Structure first, details second** — use the AST skeleton to navigate, then dive into specifics
-- **Trace the chain** — understand module collaboration through types and function signatures
-- **Fix causes, not symptoms** — patches are temporary; solutions are permanent
-- **Document with Doxygen** — generate API references automatically from your comments
-- **Respect the project's licensing conventions** — check the license file and existing code to decide if copyright headers are needed
 """
+
+
+# ── Compression prompts ───────────────────────────────────────────────
+# See prompts.md for the design rationale behind these three scenarios.
+
+COMPRESSION_PROMPT_REACTIVE = r"""Your task is to create a detailed summary of the conversation so far, focusing on preserving the project state and recent decisions essential for continuing the development. Pay special attention to the active project (if any) and the current skill phase.
+
+Before providing your final summary, wrap your analysis in <analysis> tags. In your analysis, chronologically scan the conversation and identify:
+- The active project ID, current phase (L0-L8), and module being worked on.
+- All approved contracts (ContractCrystal IDs), their signatures, and key constraints.
+- The dependency graph state (if defined) and the list of completed modules with their status.
+- Recent decisions, user approvals, and any pending approval requests.
+- Specific file paths, code snippets, error messages, or test outcomes mentioned in the last few exchanges.
+- Any L3.1 renegotiations or bug backtracking events.
+
+Then produce a summary using the following structure:
+
+<summary>
+1. Active Project & Phase:
+   [project_id, current phase, current module if any]
+2. Module & Contract Status:
+   - [Module name]: [status (contracted/implemented/tested)], Contract ID: [crystal_id], Signature: [function signature], Key constraints: [...]
+3. Dependency Graph:
+   [If defined, include topological order and any cycle warnings]
+4. Recent Decisions & Approvals:
+   - [Decision 1, with approval status]
+   - [...]
+5. Pending Actions:
+   - [Approval request, next module to implement, etc.]
+6. Important Recent Messages:
+   [Quote the most recent user request and your response verbatim if short; otherwise summarise with key details]
+7. Next Step:
+   [If known, state the next expected action, aligned with the current skill phase]
+</summary>"""
+
+COMPRESSION_PROMPT_L3_DONE = r"""You are performing a phase transition compression. The project has completed contract definition (L3) for all modules and is about to start per-module implementation (L4-L7). Your task is to create a summary that replaces all previous detailed discussion of L3 contracts, leaving only the final approved contracts and dependency relationships.
+
+Before providing your final summary, wrap your analysis in <analysis> tags. In your analysis, thoroughly identify:
+- Every module and its final approved contract: function signatures, preconditions, postconditions, boundary handling strategies, and the crystal ID (ContractCrystal).
+- The explicitly declared dependencies between modules (from L2 ModMap) and any dependency constraints.
+- Any outstanding concerns or warnings noted during L3 approval (e.g., potential performance issues, ambiguous edge cases). Do not lose these warnings.
+- The decision to proceed to implementation and the expected implementation order (if already discussed).
+
+Then produce a summary with these sections:
+
+<summary>
+1. Project & Phase Transition:
+   [project_id, transitioning from L3 to L4-L7, all contracts locked]
+2. Module Contract Catalog:
+   For each module, provide a compact record:
+   - Module: [name]
+   - Contract ID: [crystal_id]
+   - Signature: [function/method signature(s)]
+   - Preconditions: [...]
+   - Postconditions: [...]
+   - Boundary handling: [...]
+   - Notes/Warnings: [...]
+3. Dependency Map:
+   [Explicit list: ModuleA depends on ModuleB, ModuleC; ...]
+   Recommended implementation order: [topological order]
+4. Important Design Decisions:
+   - [Any global design choices or constraints agreed during L3 phase]
+5. Transition Confirmation:
+   [Statement that all contracts are approved and implementation may now proceed module by module.]
+</summary>"""
+
+COMPRESSION_PROMPT_MODULE_DONE = r"""You are performing a module completion compression. The module [ModuleName] has finished implementation (L7) and testing. A new module will start next. Your task is to summarize the just-completed module's outcome and any contract changes, while discarding the detailed L4-L7 design discussions.
+
+Before providing your final summary, wrap your analysis in <analysis> tags. In your analysis, identify:
+- The module name and its current contract (including any L3.1 revisions that occurred during implementation). Note the final contract crystal ID.
+- The implementation files and key functions created/modified, with their paths.
+- The test results (pass/fail, any significant edge cases tested).
+- Any bugs encountered and how they were fixed (summarize TraceCrystal if applicable).
+- The decision that this module is complete and ready for integration.
+
+Then produce a summary:
+
+<summary>
+1. Completed Module:
+   - Module: [ModuleName]
+   - Status: Implemented & Tested (L7 complete)
+   - Final Contract ID: [crystal_id]
+   - Contract Summary: [Signature, key constraints, any revisions from L3.1]
+2. Implementation Artifacts:
+   - File: [path] -- [function/class names] -- [brief description]
+   - ...
+3. Test Results:
+   - [Test name]: PASS/FAIL -- [note if any known limitations]
+4. Bug Fixes (if any):
+   - [Symptom] -> Root cause: [cause] -> Fix: [fix]
+   - TraceCrystal ID: [if applicable]
+5. Next Module:
+   [If known, indicate which module is next and its expected contract]
+6. Transition Confirmation:
+   [Module complete, context compressed; ready to start next module.]
+</summary>"""
 
 
 class FranxAgent:
@@ -294,18 +272,20 @@ class FranxAgent:
         temperature=0.8,
         thinking=False,
         knowledge_k=1,
+        crystal_k=3,
         crystal_store=None,
         crystal_observer=None,
     ):
         """
         Initialize the agent
         """
-        self.client = OpenAI(api_key=key, base_url=url)
+        self.client = OpenAI(api_key=key, base_url=url, timeout=120.0)
         self.model = model
         self.user_settings = settings
         self.temperature = temperature
         self.thinking = thinking
         self.knowledge_k = knowledge_k  # Number of knowledge fragments to retrieve
+        self.crystal_k = crystal_k  # Max crystal matches per query
         self.crystal_store = crystal_store  # Shared CrystalStore instance
         self.crystal_observer = crystal_observer  # Auto-extraction observer
 
@@ -322,17 +302,29 @@ class FranxAgent:
         self.module_archive_policy: dict[str, bool] = {}
         self.pending_completion: dict | None = None
         self._crystal_inactive_warned = False  # Only warn once per session
+        self._last_injections: list[dict] = []  # Injection metadata for SSE notices
+        self._last_injected_guidance: str | None = None  # Phase guidance throttle
+        self._last_guidance_token_est: int = 0  # Token position at last guidance injection
+        self._last_crystal_ctx_hash: int | None = None  # Dedup crystal context on restart
+        self._turn_usage = {"input": 0, "output": 0, "total": 0}  # Per-turn token tracking
+        self._compression_cooldown = 0  # Suppress back-to-back reactive compression
 
         raw = [{}]
         if os.path.exists("messages.json"):
-            with open("messages.json", "r", encoding="utf-8") as f:
-                raw = json.load(f)
+            try:
+                with open("messages.json", "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+            except (json.JSONDecodeError, ValueError):
+                print("[Agent] Corrupted messages.json — starting fresh.", file=sys.stderr)
+                raw = [{}]
         if isinstance(raw, dict) and "messages" in raw:
             self.messages = raw["messages"]
+            if not self.messages:
+                self.messages = [{}]
             self.message_meta = {int(k): v for k, v in raw.get("_meta", {}).items()}
             self.module_archive_policy = raw.get("_archive_policy", {})
         elif isinstance(raw, list):
-            self.messages = raw
+            self.messages = raw if raw else [{}]
             self.message_meta = {}
         else:
             self.messages = [{}]
@@ -462,10 +454,12 @@ class FranxAgent:
                 new_msg = msg.copy()
                 if filtered:
                     new_msg["tool_calls"] = filtered
-                else:
-                    # Strip invalid tool_calls but keep the message (preserve text content)
+                    new_messages.append(new_msg)
+                elif new_msg.get("content"):
+                    # Strip invalid tool_calls but keep the message if it has text content
                     new_msg.pop("tool_calls", None)
-                new_messages.append(new_msg)
+                    new_messages.append(new_msg)
+                # else: skip empty assistant message (no content, no valid tool_calls)
             elif role == "tool":
                 if msg.get("tool_call_id") in valid_ids:
                     new_messages.append(msg)
@@ -474,31 +468,101 @@ class FranxAgent:
                 new_messages.append(msg)
         self.messages = new_messages
 
-    def _build_context(self, msg: str, relevant: list[str]) -> list[dict]:
-        """Assemble the message list sent to the model (without persistent history)."""
-        messages = [
-            {"role": "system", "content": self.base_system_prompt}
-        ]
+    def _inject_project_context(self, messages: list[dict], *,
+                                 force_guidance: bool = False,
+                                 clear_module_switch: bool = True):
+        """Inject phase guidance, rollback, crystal context, and module switch.
 
-        # Inject phase-specific constraints from skill (set by set_project tool)
+        Appends system messages to ``messages`` and populates
+        ``self._last_injections`` for SSE notice emission.
+
+        Called from _build_context() at turn start and from the set_project
+        handler mid-turn so the model sees state changes immediately.
+        """
+        # ── Phase guidance ──────────────────────────────────────────────
         if state.phase_guidance:
-            messages.append({"role": "system", "content": state.phase_guidance})
+            _GUIDANCE_TOKEN_INTERVAL = 50000
+            current_tokens = sum(len(m.get("content", "")) for m in self.messages) // 4
+            guidance_changed = (state.phase_guidance != self._last_injected_guidance)
+            tokens_since = current_tokens - self._last_guidance_token_est
 
-        # Inject engineering crystal state (phase-aware, from CrystalStore)
+            if force_guidance or guidance_changed or tokens_since >= _GUIDANCE_TOKEN_INTERVAL or tokens_since < 0:
+                messages.append({"role": "system", "content": state.phase_guidance})
+                self._last_injections.append({
+                    "source": "set_project",
+                    "kind": "phase_guidance",
+                    "phase": state.active_project.get("phase", "") if state.active_project else "",
+                    "module": state.active_project.get("module", "") if state.active_project else "",
+                    "summary": f"Phase guidance injected ({len(state.phase_guidance)} chars)",
+                    "preview": state.phase_guidance[:800],
+                })
+                self._last_injected_guidance = state.phase_guidance
+                self._last_guidance_token_est = current_tokens
+
+        # ── Phase rollback ──────────────────────────────────────────────
+        if state.phase_rollback_notice:
+            notice = state.phase_rollback_notice
+            phase_label = {"L3": "L3 — 模块规格书", "L4": "L4 — 自然语言算法",
+                           "L6": "L6 — 代码骨架", "L7": "L7 — 完整实现"}
+            to_label = phase_label.get(notice['to'], notice['to'])
+            from_label = phase_label.get(notice['from'], notice['from'])
+
+            rollback_msg = (
+                f"## ⚠️ 相位回退：{from_label} → {to_label}\n\n"
+                f"工作流相位已从 **{from_label}（{notice['from']}）** 回退到 **{to_label}（{notice['to']}）**"
+            )
+            if notice.get("module"):
+                rollback_msg += f"（模块: {notice['module']}）"
+            rollback_msg += (
+                f"\n\n这意味着之前的设计需要重新审视。"
+                f"请基于已锁定的接口契约重新开展工作。"
+                f"回退前的产出不再有效，需要重新生成。"
+            )
+            if notice.get("previous_record"):
+                rollback_msg += (
+                    f"\n\n### 回退参考：{notice.get('module', '')} 在 {notice['to']} 的上一个版本\n\n"
+                    f"{notice['previous_record'][:3000]}"
+                )
+            messages.append({"role": "system", "content": rollback_msg})
+            self._last_injections.append({
+                "source": "set_project",
+                "kind": "phase_rollback",
+                "from_phase": notice["from"],
+                "to_phase": notice["to"],
+                "module": notice.get("module", ""),
+                "summary": f"Phase rollback: {notice['from']} → {notice['to']}"
+                + (f" (module: {notice['module']})" if notice.get("module") else ""),
+                "preview": rollback_msg[:800],
+            })
+            state.phase_rollback_notice = None
+
+        # ── Crystal working context ─────────────────────────────────────
         if self.crystal_store and state.active_project:
             ctx = self.crystal_store.working_context(
-                project_id=state.active_project["project_id"],
+                project_id=state.active_project.get("project_id", ""),
                 phase=state.active_project["phase"],
                 module=state.active_project.get("module"),
             )
             if ctx:
-                print(
-                    f"[CrystalStore] Injecting {len(ctx)} chars of engineering state "
-                    f"(project={state.active_project['project_id']}, "
-                    f"phase={state.active_project['phase']})",
-                    file=sys.stderr,
-                )
-                messages.append({"role": "system", "content": ctx})
+                ctx_hash = hash(ctx)
+                if ctx_hash != self._last_crystal_ctx_hash:
+                    print(
+                        f"[CrystalStore] Injecting {len(ctx)} chars of engineering state "
+                        f"(project={state.active_project['project_id']}, "
+                        f"phase={state.active_project['phase']})",
+                        file=sys.stderr,
+                    )
+                    messages.append({"role": "system", "content": ctx})
+                    self._last_injections.append({
+                        "source": "set_project",
+                        "kind": "crystal_context",
+                        "phase": state.active_project["phase"],
+                        "module": state.active_project.get("module", ""),
+                        "summary": f"Engineering crystal state ({len(ctx)} chars)"
+                        + (f" for {state.active_project.get('module')}" if state.active_project.get("module") else ""),
+                        "preview": ctx[:800],
+                    })
+                    self._last_crystal_ctx_hash = ctx_hash
             else:
                 print(
                     f"[CrystalStore] No relevant crystals for "
@@ -515,6 +579,65 @@ class FranxAgent:
                 )
                 self._crystal_inactive_warned = True
 
+        # ── Module switch context ───────────────────────────────────────
+        if state.module_switch_notice:
+            if not self.crystal_store:
+                print(
+                    f"[ModuleSwitch] CrystalStore unavailable, clearing module_switch_notice",
+                    file=sys.stderr,
+                )
+                state.module_switch_notice = None
+            else:
+                switch = state.module_switch_notice
+                entry_ctx = self.crystal_store.get_module_entry_context(
+                    project_id=state.active_project.get("project_id", ""),
+                    module=switch["new_module"],
+                )
+                if entry_ctx:
+                    switch_msg = (
+                        f"## 🔄 模块切换：{switch['old_module']} → {switch['new_module']}\n\n"
+                        f"你已切换到模块 **{switch['new_module']}**（阶段: {switch['phase']}）。"
+                        f"以下是该模块及其依赖的已锁定契约，请基于这些契约开展工作。\n\n"
+                        f"{entry_ctx}"
+                    )
+                    recommend_ctx = self._build_recommend_context(
+                        project_id=state.active_project.get("project_id", ""),
+                        current_module=switch["new_module"],
+                    )
+                    if recommend_ctx:
+                        switch_msg += "\n\n" + recommend_ctx
+                    messages.append({"role": "system", "content": switch_msg})
+                    self._last_injections.append({
+                        "source": "set_project",
+                        "kind": "module_switch",
+                        "old_module": switch["old_module"],
+                        "new_module": switch["new_module"],
+                        "phase": switch["phase"],
+                        "summary": f"Module switch: {switch['old_module']} → {switch['new_module']}"
+                        + f" (phase: {switch['phase']}, {len(switch_msg)} chars)",
+                        "preview": switch_msg[:800],
+                    })
+                    print(
+                        f"[CrystalStore] Module switch {switch['old_module']}→{switch['new_module']}: "
+                        f"injected {len(switch_msg)} chars entry context",
+                        file=sys.stderr,
+                    )
+                if clear_module_switch:
+                    state.module_switch_notice = None
+
+    def _build_context(self, msg: str, relevant: list[str]) -> list[dict]:
+        """Assemble the message list sent to the model (without persistent history).
+
+        Also populates self._last_injections with metadata about injected system
+        messages so that input() can yield SSE notices to the frontend.
+        """
+        self._last_injections = []
+        messages = [
+            {"role": "system", "content": self.base_system_prompt}
+        ]
+
+        self._inject_project_context(messages)
+
         # RAG knowledge retrieval (two-level summary memory system)
         if relevant:
             knowledge_text = "\n".join(relevant)
@@ -522,9 +645,16 @@ class FranxAgent:
                 "role": "system",
                 "content": f"## 📚 相关记忆摘要\n\n{knowledge_text}",
             })
+            self._last_injections.append({
+                "source": "knowledge_base",
+                "kind": "knowledge_summary",
+                "summary": f"RAG knowledge: {len(relevant)} results ({len(knowledge_text)} chars)",
+                "preview": knowledge_text[:800],
+            })
 
-        # Attach persistent message history (skip index 0 = base system prompt)
-        messages.extend(self.messages[1:])
+        # Attach persistent message history (skip index 0 if it is the base system prompt)
+        start_idx = 1 if (self.messages and self.messages[0].get("role") == "system") else 0
+        messages.extend(self.messages[start_idx:])
         return messages
 
     def _get_relevant_knowledge(self, msg: str) -> list[str]:
@@ -533,7 +663,22 @@ class FranxAgent:
         Two-level summary memory format:
           Each result string includes a memory_id reference so the model can
           call recall(memory_id="...") to fetch full original content.
+
+        Persistent ExperienceCrystals are injected in all branches for
+        cross-project knowledge transfer.
         """
+        # ── Query rewriting: abstract user intent for better embedding match ──
+        if not msg or not msg.strip():
+            return []
+        search_query = msg
+        try:
+            from knowledge.lightweight import rewrite_query
+            rewritten = rewrite_query(msg)
+            if rewritten:
+                search_query = rewritten
+        except Exception:
+            pass
+
         if not self.crystal_store or not state.active_project:
             if self.crystal_store and state.active_project is None:
                 total = len(self.crystal_store.get_active_crystals())
@@ -544,14 +689,43 @@ class FranxAgent:
                         file=sys.stderr,
                     )
                     self._crystal_inactive_warned = True
-            return self._format_search_results(search(msg, k=self.knowledge_k))
+            results = self._format_search_results(search(search_query, k=self.knowledge_k))
+            # Inject matching persistent experiences even without active project
+            results.extend(self._get_persistent_experiences(search_query))
+            return results
 
-        phase = state.active_project["phase"]
+        phase = state.active_project.get("phase", "")
         module = state.active_project.get("module", "")
+        project_id = state.active_project.get("project_id", "")
 
-        if phase in ("L3",):
-            contracts = self.crystal_store.find_similar_contracts(msg, top_k=3)
-            traces = self.crystal_store.find_related_traces(module or msg, top_k=2)
+        # ── L0 / L1 / L2: Project contracts ────────────────────────────
+        if phase in ("L0", "L1", "L2"):
+            contracts = self.crystal_store.get_active_crystals(
+                project_id=state.active_project.get("project_id", ""),
+                crystal_type="ContractCrystal",
+            )
+            print(
+                f"[CrystalStore] Phase {phase}: found {len(contracts)} project contracts",
+                file=sys.stderr,
+            )
+            results = []
+            for c in contracts[:self.crystal_k]:
+                content = c.get("content", {}) if isinstance(c.get("content"), dict) else {}
+                results.append(
+                    f"[ContractCrystal v{c['vitality']}] {c['module']}.{c['name']}: "
+                    f"signature={content.get('signature', 'N/A')}"
+                )
+            if not results:
+                results = self._format_search_results(search(search_query, k=self.knowledge_k))
+            else:
+                results.extend(self._format_search_results(search(search_query, k=2)))
+            results.extend(self._get_persistent_experiences(search_query))
+            return results
+
+        # ── L3 / L3.1: Similar contracts + related traces ──────────────
+        if phase in ("L3", "L3.1"):
+            contracts = self.crystal_store.find_similar_contracts(msg, top_k=self.crystal_k)
+            traces = self.crystal_store.find_related_traces(module or msg, top_k=max(1, self.crystal_k - 1))
             print(
                 f"[CrystalStore] Phase {phase}: found {len(contracts)} similar contracts + "
                 f"{len(traces)} related traces",
@@ -569,56 +743,300 @@ class FranxAgent:
                 results.append(
                     f"[TraceCrystal] {t['name']}: root_cause={content.get('root_cause', 'N/A')}"
                 )
+            # L3.1 also injects the current contract being renegotiated
+            if phase == "L3.1" and module:
+                current = self.crystal_store.get_active_crystals(
+                    project_id=state.active_project.get("project_id", ""),
+                    crystal_type="ContractCrystal",
+                    module=module,
+                )
+                for c in current[:1]:
+                    content = c.get("content", {}) if isinstance(c.get("content"), dict) else {}
+                    results.insert(0,
+                        f"[CURRENT CONTRACT — under renegotiation] {c['name']}: "
+                        f"signature={content.get('signature', 'N/A')}"
+                    )
             if not results:
-                results = self._format_search_results(search(msg, k=self.knowledge_k))
+                results = self._format_search_results(search(search_query, k=self.knowledge_k))
             else:
-                # Merge with search results for broader context
-                results.extend(self._format_search_results(search(msg, k=2)))
+                results.extend(self._format_search_results(search(search_query, k=2)))
+            results.extend(self._get_persistent_experiences(search_query))
             return results
 
-        if phase in ("L6", "L7"):
-            traces = self.crystal_store.find_related_traces(module or msg, top_k=3)
+        # ── L4: Logic crystals + related traces ────────────────────────
+        if phase in ("L4",):
+            logics = self.crystal_store.get_active_crystals(
+                project_id=state.active_project.get("project_id", ""),
+                crystal_type="LogicCrystal",
+            )
+            traces = self.crystal_store.find_related_traces(module or msg, top_k=self.crystal_k)
             print(
-                f"[CrystalStore] Phase {phase}: found {len(traces)} related traces",
+                f"[CrystalStore] Phase {phase}: found {len(logics)} logic crystals + "
+                f"{len(traces)} related traces",
                 file=sys.stderr,
             )
-            if traces:
-                results = []
-                for t in traces:
-                    content = t.get("content", {}) if isinstance(t.get("content"), dict) else {}
+            results = []
+            if logics:
+                for lc in logics[:self.crystal_k]:
+                    content = lc.get("content", {}) if isinstance(lc.get("content"), dict) else {}
+                    steps = content.get("algorithm_steps", [])
+                    # Normalize: steps may be list[str] or list[dict]
+                    if steps and isinstance(steps[0], dict):
+                        steps = [s.get("step", s.get("description", str(s))) for s in steps]
+                    steps_preview = "; ".join(steps[:3]) if steps else "N/A"
                     results.append(
-                        f"[TraceCrystal] {t['name']}: "
-                        f"symptom={content.get('symptom', 'N/A')}, "
-                        f"fix={content.get('fix', 'N/A')}"
+                        f"[LogicCrystal v{lc['vitality']}] {lc['module']}.{lc['name']}: "
+                        f"steps={steps_preview}"
                     )
-                results.extend(self._format_search_results(search(msg, k=2)))
-                return results
+            for t in traces:
+                content = t.get("content", {}) if isinstance(t.get("content"), dict) else {}
+                results.append(
+                    f"[TraceCrystal] {t['name']}: root_cause={content.get('root_cause', 'N/A')}"
+                )
+            if not results:
+                results = self._format_search_results(search(search_query, k=self.knowledge_k))
+            else:
+                results.extend(self._format_search_results(search(search_query, k=2)))
+            results.extend(self._get_persistent_experiences(search_query))
+            return results
 
-        return self._format_search_results(search(msg, k=self.knowledge_k))
+        # ── L5: Logic crystals + Skeleton crystals + traces ────────────
+        if phase in ("L5",):
+            logics = self.crystal_store.get_active_crystals(
+                project_id=state.active_project.get("project_id", ""),
+                crystal_type="LogicCrystal",
+                module=module,
+            )
+            skeletons = self.crystal_store.get_active_crystals(
+                project_id=state.active_project.get("project_id", ""),
+                crystal_type="SkeletonCrystal",
+                module=module,
+            )
+            traces = self.crystal_store.find_related_traces(module or msg, top_k=2)
+            print(
+                f"[CrystalStore] Phase {phase}: found {len(logics)} logic + "
+                f"{len(skeletons)} skeleton + {len(traces)} traces",
+                file=sys.stderr,
+            )
+            results = []
+            for lc in (logics or [])[:self.crystal_k]:
+                content = lc.get("content", {}) if isinstance(lc.get("content"), dict) else {}
+                steps = content.get("algorithm_steps", [])
+                if steps and isinstance(steps[0], dict):
+                    steps = [s.get("step", s.get("description", str(s))) for s in steps]
+                steps_preview = "; ".join(steps[:3]) if steps else "N/A"
+                results.append(
+                    f"[LogicCrystal v{lc['vitality']}] {lc['module']}.{lc['name']}: "
+                    f"steps={steps_preview}"
+                )
+            for sk in (skeletons or [])[:self.crystal_k]:
+                content = sk.get("content", {}) if isinstance(sk.get("content"), dict) else {}
+                code = content.get("code_skeleton", "")
+                code_preview = code[:200] if code else "N/A"
+                results.append(
+                    f"[SkeletonCrystal v{sk['vitality']}] {sk['module']}.{sk['name']}: "
+                    f"code={code_preview}"
+                )
+            for t in traces:
+                content = t.get("content", {}) if isinstance(t.get("content"), dict) else {}
+                results.append(
+                    f"[TraceCrystal] {t['name']}: root_cause={content.get('root_cause', 'N/A')}"
+                )
+            if not results:
+                results = self._format_search_results(search(search_query, k=self.knowledge_k))
+            else:
+                results.extend(self._format_search_results(search(search_query, k=2)))
+            results.extend(self._get_persistent_experiences(search_query))
+            return results
+
+        # ── L6 / L7: Traces + Skeleton/Impl crystals ───────────────────
+        if phase in ("L6", "L7"):
+            traces = self.crystal_store.find_related_traces(module or msg, top_k=self.crystal_k)
+            # Also look for existing skeletons/impls for this module
+            skeletons = self.crystal_store.get_active_crystals(
+                project_id=state.active_project.get("project_id", ""),
+                crystal_type="SkeletonCrystal",
+                module=module,
+            )
+            impls = self.crystal_store.get_active_crystals(
+                project_id=state.active_project.get("project_id", ""),
+                crystal_type="ImplCrystal",
+                module=module,
+            )
+            print(
+                f"[CrystalStore] Phase {phase}: found {len(traces)} traces + "
+                f"{len(skeletons)} skeleton + {len(impls)} impl",
+                file=sys.stderr,
+            )
+            results = []
+            for t in traces:
+                content = t.get("content", {}) if isinstance(t.get("content"), dict) else {}
+                results.append(
+                    f"[TraceCrystal] {t['name']}: "
+                    f"symptom={content.get('symptom', 'N/A')}, "
+                    f"fix={content.get('fix', 'N/A')}"
+                )
+            for sk in (skeletons or [])[:max(1, self.crystal_k - len(traces))]:
+                content = sk.get("content", {}) if isinstance(sk.get("content"), dict) else {}
+                lang = content.get("language", "")
+                results.append(
+                    f"[SkeletonCrystal v{sk['vitality']}] {sk['module']}.{sk['name']}"
+                    + (f" ({lang})" if lang else "")
+                )
+            for imp in (impls or [])[:max(1, self.crystal_k - len(traces) - len(skeletons or []))]:
+                content = imp.get("content", {}) if isinstance(imp.get("content"), dict) else {}
+                lang = content.get("language", "")
+                results.append(
+                    f"[ImplCrystal v{imp['vitality']}] {imp['module']}.{imp['name']}"
+                    + (f" ({lang})" if lang else "")
+                )
+            if not results:
+                results = self._format_search_results(search(search_query, k=self.knowledge_k))
+            else:
+                results.extend(self._format_search_results(search(search_query, k=2)))
+            results.extend(self._get_persistent_experiences(search_query))
+            return results
+
+        # ── L8: All traces + full contract chain ───────────────────────
+        if phase in ("L8",):
+            traces = self.crystal_store.get_active_crystals(
+                project_id=state.active_project.get("project_id", ""),
+                crystal_type="TraceCrystal",
+            )
+            contracts = self.crystal_store.get_active_crystals(
+                project_id=state.active_project.get("project_id", ""),
+                crystal_type="ContractCrystal",
+            )
+            print(
+                f"[CrystalStore] Phase {phase}: found {len(traces)} traces + "
+                f"{len(contracts)} contracts",
+                file=sys.stderr,
+            )
+            results = []
+            for t in (traces or [])[:self.crystal_k]:
+                content = t.get("content", {}) if isinstance(t.get("content"), dict) else {}
+                results.append(
+                    f"[TraceCrystal] {t['name']}: "
+                    f"symptom={content.get('symptom', 'N/A')}, "
+                    f"root_cause={content.get('root_cause', 'N/A')}"
+                )
+            for c in (contracts or [])[:self.crystal_k]:
+                content = c.get("content", {}) if isinstance(c.get("content"), dict) else {}
+                results.append(
+                    f"[ContractCrystal v{c['vitality']}] {c['module']}.{c['name']}: "
+                    f"{'✅' if content.get('has_implementation') else '⏳'} "
+                    f"signature={content.get('signature', 'N/A')}"
+                )
+            if not results:
+                results = self._format_search_results(search(search_query, k=self.knowledge_k))
+            else:
+                results.extend(self._format_search_results(search(search_query, k=2)))
+            results.extend(self._get_persistent_experiences(search_query))
+            return results
+
+        # ── Fallback: no active project or unrecognized phase ──────────
+        results = self._format_search_results(search(search_query, k=self.knowledge_k))
+        results.extend(self._get_persistent_experiences(search_query))
+        return results
+
+    def _get_persistent_experiences(self, msg: str) -> list[str]:
+        """Fetch persistent ExperienceCrystals matching the current message.
+
+        Returns formatted strings with crystal_id references so the model
+        can call recall(crystal_id="...") for full details.
+        """
+        if not self.crystal_store:
+            return []
+
+        persistent = self.crystal_store.get_persistent_crystals("ExperienceCrystal")
+        if not persistent:
+            return []
+
+        # Simple keyword matching
+        msg_lower = msg.lower()
+        matched = []
+        for c in persistent:
+            content = c.get("content", {}) if isinstance(c.get("content"), dict) else {}
+            title = content.get("title", c.get("name", ""))
+            summary = content.get("summary", "")
+            tags = content.get("tags", [])
+            combined = f"{title} {summary} {' '.join(tags)}".lower()
+
+            score = 0
+            for word in msg_lower.split():
+                if len(word) >= 2 and word in combined:
+                    score += 1
+            if score == 0:
+                continue
+
+            crystal_id_str = (
+                f"ExperienceCrystal:{c.get('project_id', '')}:"
+                f"{c.get('module', '')}.{c.get('name', '')}:v1.0"
+            )
+            refs = content.get("reference_values", {})
+            dim_tags = [
+                f"[{d}]" for d in ("debug", "architecture", "implementation",
+                                   "contract", "algorithm", "meta")
+                if refs.get(d) and isinstance(refs.get(d), str) and len(refs[d]) > 5
+            ]
+
+            line = (
+                f"- **{crystal_id_str}** | 🧠 经验"
+                f"{('：' + title) if title else ''}\n"
+                f"  {summary}\n"
+            )
+            if dim_tags:
+                line += f"  可用维度：{' '.join(dim_tags)}\n"
+            line += f"  → 使用 `recall(memory_id=\"{crystal_id_str}\")` 查看完整经验"
+            matched.append((score, line))
+
+        matched.sort(key=lambda x: x[0], reverse=True)
+        return [line for _, line in matched[:2]]
 
     def _format_search_results(self, results: list[dict]) -> list[str]:
         """Format structured search results with memory_id for recall tool.
 
         Each result becomes a markdown bullet with memory_id reference
         so the model can call recall(memory_id="...") for full details.
+        Prefers main_summary over truncated text when available.
+        Appends dimension tags below the summary for multi-dimensional entries.
+        For experience_crystal type, uses crystal_id reference.
         """
         formatted = []
         for r in results:
             mid = r.get("memory_id")
+            doc_type = r.get("type", "")
             icon = r.get("icon", "📄")
             title = r.get("title", "")
+            main_summary = r.get("main_summary")
+            dimensions = r.get("dimensions", [])
             text = r.get("text", "")
 
-            # Truncate text for context efficiency — full text via recall
-            summary = text[:200] if len(text) > 200 else text
+            # Prefer main_summary, fallback to truncated text
+            if main_summary:
+                summary = main_summary
+            else:
+                summary = text[:200] if len(text) > 200 else text
+
+            is_experience = doc_type == "experience_crystal"
 
             if mid:
                 line = (
                     f"- **{mid}** | {icon}"
                     f"{('：' + title) if title else ''}\n"
                     f"  {summary}\n"
-                    f"  → 使用 `recall(memory_id=\"{mid}\")` 查看原文"
                 )
+                # Append dimension lines
+                for d in dimensions:
+                    if isinstance(d, dict) and d.get("dim") and d.get("summary"):
+                        line += f"    [{d['dim']}] {d['summary']}\n"
+                if is_experience:
+                    line += (
+                        f"  → 使用 `recall(memory_id=\"{mid}\", dim=\"<维度>\")` "
+                        f"查看特定维度的参考建议"
+                    )
+                else:
+                    line += f"  → 使用 `recall(memory_id=\"{mid}\")` 查看原文"
             else:
                 # Legacy entries without memory_id
                 line = (
@@ -642,340 +1060,685 @@ class FranxAgent:
         original_len = len(self.messages)
 
         # Acquire the per-agent lock to prevent concurrent input() calls
-        self._input_lock.acquire()
+        if not self._input_lock.acquire(timeout=30):
+            raise RuntimeError(
+                "Another request is in progress for this agent. "
+                "Please wait and retry."
+            )
+        self._turn_usage = {"input": 0, "output": 0, "total": 0}
         try:
-            # 1. Persist the current user message
-            self._append_message("user", msg)
+            max_restarts = 3
+            restart = True
+            first_entry = True
 
-            # 1.5 Detect pending completion confirmation from previous turn
-            if self._detect_completion_confirmation(msg):
-                self._archive_completed_modules()
-            elif self.pending_completion:
-                # User didn't confirm — clear pending (assume rework needed)
-                pending_mod = self.pending_completion["module"]
-                print(
-                    f"[Archive] Module {pending_mod} completion NOT confirmed, "
-                    f"clearing pending marker",
-                    file=sys.stderr,
-                )
-                self.pending_completion = None
+            while restart and max_restarts > 0:
+                restart = False
+                _should_exit = False
+                max_restarts -= 1
 
-            # 2. Retrieve relevant knowledge for this query (phase-aware when CrystalStore is active)
-            relevant = self._get_relevant_knowledge(msg)
-
-            # 3. Build the initial message list for this API call
-            api_messages = self._build_context(msg, relevant)
-
-            # Make a working copy that we will update during the tool call loop
-            current_api_messages = api_messages.copy()
-
-            max_iterations = 50
-            iteration = 0
-            while True:
-                iteration += 1
-                if iteration > max_iterations:
-                    yield f"\n\n[Agent stopped after {max_iterations} tool-call iterations to prevent infinite loop.]\n"
-                    self._append_message("assistant", f"[Stopped after {max_iterations} iterations]")
-                    self._save_messages()
-                    return
-                try:
-                    # Call the model (based on thinking configuration)
-                    if self.thinking:
-                        stream = self.client.chat.completions.create(
-                            model=self.model,
-                            messages=current_api_messages,
-                            temperature=self.temperature,
-                            tools=self.tools,
-                            tool_choice="auto",
-                            stream=True,
-                            extra_body={"thinking": {"type": "enabled"}},
+                # 0. Phase transition compression — L3→L4: all contracts locked,
+                #    entering per-module implementation. Compress L3 negotiation
+                #    history into a contract catalog before heavy L4-L7 work.
+                if state.phase_transition_notice:
+                    ptn = state.phase_transition_notice
+                    print(
+                        f"[Memory] Phase transition compression triggered: "
+                        f"{ptn['from']}→{ptn['to']}",
+                        file=sys.stderr,
+                    )
+                    # Generate contract catalog summary of all L3 negotiation
+                    l3_summary, l3_max_idx = self._compress_l3_done()
+                    if l3_summary:
+                        self.messages.append({
+                            "role": "system",
+                            "content": l3_summary,
+                        })
+                        print(
+                            f"[Memory] L3→L4: injected contract catalog "
+                            f"({len(l3_summary)} chars)",
+                            file=sys.stderr,
                         )
-                    else:
-                        stream = self.client.chat.completions.create(
-                            model=self.model,
-                            messages=current_api_messages,
-                            temperature=self.temperature,
-                            tools=self.tools,
-                            tool_choice="auto",
-                            stream=True,
-                            extra_body={"thinking": {"type": "disabled"}},
+                    before_count = len(self.messages)
+                    self._proactive_cut(l3_max_idx)
+                    after_count = len(self.messages)
+                    cut_count = before_count - after_count
+                    print(
+                        f"[Memory] Phase transition result: {before_count}→{after_count} "
+                        f"(cut {cut_count} messages)",
+                        file=sys.stderr,
+                    )
+                    if cut_count > 0:
+                        yield {
+                            "type": "compression",
+                            "cut_messages": cut_count,
+                            "remaining_messages": after_count,
+                            "reason": "phase_transition",
+                            "from_phase": ptn["from"],
+                            "to_phase": ptn["to"],
+                        }
+
+                    state.phase_transition_notice = None
+
+                # 0.5 Module switch compression — fires when set_project changes
+                #     module within the same project (e.g. Auth→API after L7 done).
+                if state.module_switch_notice:
+                    switch = state.module_switch_notice
+                    print(
+                        f"[ModuleSwitch] Proactive compression triggered: "
+                        f"{switch['old_module']}→{switch['new_module']} ({switch['phase']})",
+                        file=sys.stderr,
+                    )
+                    # Generate completion summary for the just-finished module
+                    mod_summary, mod_max_idx = self._compress_module_done(switch["old_module"])
+                    if mod_summary:
+                        self.messages.append({
+                            "role": "system",
+                            "content": mod_summary,
+                        })
+                        print(
+                            f"[ModuleSwitch] Injected {switch['old_module']} "
+                            f"completion summary ({len(mod_summary)} chars)",
+                            file=sys.stderr,
                         )
+                    before_count = len(self.messages)
+                    self._proactive_cut(mod_max_idx)
+                    after_count = len(self.messages)
+                    cut_count = before_count - after_count
+                    print(
+                        f"[ModuleSwitch] Compression result: {cut_count} messages cut "
+                        f"({before_count}→{after_count})",
+                        file=sys.stderr,
+                    )
+                    if cut_count > 0:
+                        yield {
+                            "type": "compression",
+                            "cut_messages": cut_count,
+                            "remaining_messages": after_count,
+                            "reason": "module_switch",
+                            "old_module": switch["old_module"],
+                            "new_module": switch["new_module"],
+                        }
 
-                    full_content = ""  # Accumulate complete response
-                    full_reasoning = ""  # Accumulate reasoning (if enabled)
-                    tool_calls_data = {}  # Store tool call data
+                # Capture restart flag before first_entry block clears it
+                is_restart = not first_entry
 
-                    # Process streaming response
-                    for chunk in stream:
-                        delta = chunk.choices[0].delta
+                if first_entry:
+                    first_entry = False
 
-                        # Process text content
-                        if delta.content:
-                            full_content += delta.content
-                            yield delta.content
+                    # 1. Persist the current user message
+                    self._append_message("user", msg)
 
-                        if (
-                            hasattr(delta, "reasoning_content")
-                            and delta.reasoning_content
-                        ):
-                            full_reasoning += delta.reasoning_content
+                    # 1.5 Detect pending completion confirmation from previous turn
+                    if self._detect_completion_confirmation(msg):
+                        self._archive_completed_modules()
+                    elif self.pending_completion:
+                        pending_mod = self.pending_completion["module"]
+                        print(
+                            f"[Archive] Module {pending_mod} completion NOT confirmed, "
+                            f"clearing pending marker",
+                            file=sys.stderr,
+                        )
+                        self.pending_completion = None
 
-                        # Process tool calls (incremental)
-                        if delta.tool_calls:
-                            for tc in delta.tool_calls:
-                                idx = tc.index
-                                if idx not in tool_calls_data:
-                                    # Initialize tool call object
-                                    tool_calls_data[idx] = {
-                                        "id": tc.id,
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
+                # 2. Retrieve relevant knowledge (re-run on restart — state may have changed)
+                relevant = self._get_relevant_knowledge(msg)
+
+                # 3. Build context (re-run on restart — _inject_project_context picks up new state)
+                api_messages = self._build_context(msg, relevant)
+
+                # 3.5 Yield system injection notices to frontend
+                if self._last_injections:
+                    for inj in self._last_injections:
+                        yield {"type": "system_injection", **inj}
+                    self._last_injections = []
+
+                # 4. On outer-loop restart, signal frontend to create a new bubble
+                if is_restart:
+                    yield {"type": "context_restart"}
+
+                # Make a working copy for the tool call loop
+                current_api_messages = api_messages.copy()
+
+                max_iterations = 50
+                iteration = 0
+                while True:
+                    iteration += 1
+                    if iteration >= max_iterations:
+                        yield f"\n\n[Agent stopped after {max_iterations} tool-call iterations to prevent infinite loop.]\n"
+                        self._append_message("assistant", f"[Stopped after {max_iterations} iterations]")
+                        self._save_messages()
+                        return
+                    try:
+                        # Call the model (based on thinking configuration)
+                        if self.thinking:
+                            stream = self.client.chat.completions.create(
+                                model=self.model,
+                                messages=current_api_messages,
+                                temperature=self.temperature,
+                                tools=self.tools,
+                                tool_choice="auto",
+                                stream=True,
+                                stream_options={"include_usage": True},
+                                extra_body={"thinking": {"type": "enabled"}},
+                            )
+                        else:
+                            stream = self.client.chat.completions.create(
+                                model=self.model,
+                                messages=current_api_messages,
+                                temperature=self.temperature,
+                                tools=self.tools,
+                                tool_choice="auto",
+                                stream=True,
+                                stream_options={"include_usage": True},
+                                extra_body={"thinking": {"type": "disabled"}},
+                            )
+
+                        full_content = ""  # Accumulate complete response
+                        full_reasoning = ""  # Accumulate reasoning (if enabled)
+                        tool_calls_data = {}  # Store tool call data
+                        turn_usage = None  # Token usage from this API call
+
+                        # Process streaming response
+                        for chunk in stream:
+                            if hasattr(chunk, "usage") and chunk.usage:
+                                turn_usage = {
+                                    "input": chunk.usage.prompt_tokens or 0,
+                                    "output": chunk.usage.completion_tokens or 0,
+                                    "total": chunk.usage.total_tokens or 0,
+                                }
+                            if not chunk.choices:
+                                continue
+                            delta = chunk.choices[0].delta
+
+                            # Process text content
+                            if delta.content:
+                                full_content += delta.content
+                                yield delta.content
+
+                            if (
+                                hasattr(delta, "reasoning_content")
+                                and delta.reasoning_content
+                            ):
+                                full_reasoning += delta.reasoning_content
+
+                            # Process tool calls (incremental)
+                            if delta.tool_calls:
+                                for tc in delta.tool_calls:
+                                    idx = tc.index
+                                    if idx not in tool_calls_data:
+                                        # Initialize tool call object
+                                        tool_calls_data[idx] = {
+                                            "id": tc.id,
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""},
+                                        }
+                                    if tc.function.name:
+                                        tool_calls_data[idx]["function"]["name"] += (
+                                            tc.function.name
+                                        )
+                                    if tc.function.arguments:
+                                        tool_calls_data[idx]["function"]["arguments"] += (
+                                            tc.function.arguments
+                                        )
+
+                        # Build complete assistant message
+                        assistant_message = {
+                            "role": "assistant",
+                            "content": full_content,
+                            "tool_calls": [dict(tc) for tc in tool_calls_data.values()]
+                            if tool_calls_data
+                            else None,
+                        }
+                        if self.thinking and full_reasoning:
+                            assistant_message["reasoning_content"] = full_reasoning
+                        # Append to both current API messages and persistent history
+                        current_api_messages.append(assistant_message)
+
+                        # Accumulate token usage from this API call
+                        if turn_usage:
+                            self._turn_usage["input"] += turn_usage["input"]
+                            self._turn_usage["output"] += turn_usage["output"]
+                            self._turn_usage["total"] += turn_usage["total"]
+
+                        # If no tool calls, finish
+                        if not tool_calls_data:
+                            extra = {}
+                            if assistant_message.get("reasoning_content"):
+                                extra["reasoning_content"] = assistant_message["reasoning_content"]
+                            if assistant_message.get("tool_calls") is not None:
+                                extra["tool_calls"] = assistant_message["tool_calls"]
+                            self._append_message("assistant", full_content, **extra)
+                            self._save_messages()
+
+                            # CrystalObserver auto-extraction (background, non-blocking)
+                            if self.crystal_observer and state.active_project:
+                                observer = self.crystal_observer
+                                project_snapshot = dict(state.active_project)
+                                turn_msgs = [
+                                    m for m in self.messages[-8:]
+                                    if m.get("role") in ("user", "assistant", "tool")
+                                ]
+                                def _run_observer():
+                                    try:
+                                        cid = observer.analyze_turn(
+                                            turn_msgs, project_snapshot
+                                        )
+                                        if cid:
+                                            print(
+                                                f"[CrystalObserver] Auto-extracted: {cid}",
+                                                file=sys.stderr,
+                                            )
+                                    except Exception as e:
+                                        print(
+                                            f"[CrystalObserver] Non-fatal error: {e}",
+                                            file=sys.stderr,
+                                        )
+                                threading.Thread(target=_run_observer, daemon=True).start()
+
+                            if self._turn_usage["total"] > 0:
+                                yield {
+                                    "type": "token_usage",
+                                    "input_tokens": self._turn_usage["input"],
+                                    "output_tokens": self._turn_usage["output"],
+                                    "total_tokens": self._turn_usage["total"],
+                                }
+                            return
+
+                        # Execute tool calls one by one
+                        tool_messages = []
+                        tool_call = None  # ensure defined for finally block
+                        for tool_call in tool_calls_data.values():
+                            tool_message = None
+                            try:
+                                func_name = tool_call["function"]["name"]
+
+                                try:
+                                    arguments = json.loads(
+                                        tool_call["function"]["arguments"]
+                                    )
+                                except json.JSONDecodeError as e:
+                                    # Feed error back to model and continue
+                                    raw_args = tool_call['function']['arguments']
+                                    hint = ""
+                                    if "\n" in raw_args:
+                                        hint = " (Hint: newlines in JSON must be escaped as \\n, not literal newlines)"
+                                    raise ValueError(
+                                        f"JSON parsing error: {e}.{hint} Raw arguments: {raw_args}"
+                                    )
+
+                                # Guard against null arguments from malformed tool calls
+                                if arguments is None:
+                                    arguments = {}
+
+                                # If the model directly called a built-in tool name (e.g., time, read), automatically convert to tools call
+                                if func_name != "tools" and "/" not in func_name:
+                                    # Construct new arguments: tool_name is the original function name, arguments are the original parameters
+                                    new_arguments = {
+                                        "tool_name": func_name,
+                                        "arguments": arguments,
                                     }
-                                if tc.function.name:
-                                    tool_calls_data[idx]["function"]["name"] += (
-                                        tc.function.name
+                                    # Update tool_call object
+                                    tool_call["function"]["name"] = "tools"
+                                    tool_call["function"]["arguments"] = json.dumps(
+                                        new_arguments, ensure_ascii=False
                                     )
-                                if tc.function.arguments:
-                                    tool_calls_data[idx]["function"]["arguments"] += (
-                                        tc.function.arguments
-                                    )
+                                    func_name = "tools"
+                                    arguments = new_arguments
 
-                    # Build complete assistant message
-                    assistant_message = {
-                        "role": "assistant",
-                        "content": full_content,
-                        "tool_calls": [dict(tc) for tc in tool_calls_data.values()]
-                        if tool_calls_data
-                        else None,
-                    }
-                    if self.thinking and full_reasoning:
-                        assistant_message["reasoning_content"] = full_reasoning
-                    # Append to both current API messages and persistent history
-                    current_api_messages.append(assistant_message)
+                                # Determine the actual tool name
+                                actual_tool_name = None
+                                if func_name == "tools":
+                                    # Extract tool_name from arguments (when wrapped)
+                                    actual_tool_name = arguments.get("tool_name")
+                                else:
+                                    actual_tool_name = func_name
 
-                    # If no tool calls, finish
-                    if not tool_calls_data:
+                                # 1. Send tool_call event first (shows "Using xxx...")
+                                call_id = tool_call["id"]
+                                yield {
+                                    "type": "tool_call",
+                                    "call_id": call_id,
+                                    "tool_name": actual_tool_name,
+                                    "arguments": arguments,
+                                    "result": None,  # No result yet
+                                }
+
+                                result = None
+                                # 2. Handle tool execution based on type
+                                if actual_tool_name == "command":
+                                    # Extract command string and classify risk level
+                                    inner = arguments.get("arguments", {}) if isinstance(arguments.get("arguments"), dict) else {}
+                                    cmd_str = inner.get("command", "")
+                                    from knowledge.tools.command import classify_command
+                                    risk = classify_command(cmd_str) if cmd_str else "dangerous"
+
+                                    if risk == "forbidden":
+                                        # Deletion commands are hard-blocked by tool.py
+                                        func = self.tool_functions.get(func_name)
+                                        result = func(**arguments) if func else f"Error: unknown tool {func_name}"
+                                    elif risk == "safe":
+                                        # Read-only commands — execute directly
+                                        func = self.tool_functions.get(func_name)
+                                        if func:
+                                            result = func(**arguments)
+                                        else:
+                                            result = f"Error: unknown tool {func_name}"
+                                    else:
+                                        # Dangerous commands — require confirmation with warning
+                                        confirm_id = str(uuid.uuid4())
+                                        approved = yield {
+                                            "type": "confirmation_required",
+                                            "confirm_id": confirm_id,
+                                            "call_id": call_id,
+                                            "tool_name": actual_tool_name,
+                                            "arguments": arguments,
+                                            "warning": (
+                                                "This command may modify files or system state. "
+                                                "Please review carefully before approving."
+                                            ),
+                                        }
+                                        if approved:
+                                            func = self.tool_functions.get(func_name)
+                                            if func:
+                                                result = func(**arguments)
+                                            else:
+                                                result = f"Error: unknown tool {func_name}"
+                                        else:
+                                            result = f"Tool '{actual_tool_name}' execution was rejected by the user."
+                                elif actual_tool_name == "write":
+                                    # Write tools use proposal-review-overwrite mode.
+                                    # The tool returns a string split by ---FILE_CONTENT---:
+                                    #   part 0: diff/structure (for agent history, ~300-600 chars)
+                                    #   part 1: full file content (for frontend review)
+                                    func = self.tool_functions.get(func_name)
+                                    if func:
+                                        ai_content_raw = str(func(**arguments))
+                                    else:
+                                        ai_content_raw = f"Error: unknown tool {func_name}"
+
+                                    if "---FILE_CONTENT---" not in ai_content_raw:
+                                        # Error or unexpected output — feed back to model
+                                        # directly, no proposal UI needed
+                                        result = ai_content_raw
+                                    else:
+                                        parts = ai_content_raw.split("---FILE_CONTENT---", 1)
+                                        agent_result = parts[0].strip()
+                                        full_content = parts[1].strip()
+
+                                        confirm_id = str(uuid.uuid4())
+                                        result = yield {
+                                            "type": "write_proposal",
+                                            "confirm_id": confirm_id,
+                                            "call_id": call_id,
+                                            "tool_name": actual_tool_name,
+                                            "arguments": arguments,
+                                            "content": full_content,
+                                        }
+                                        if result is True or isinstance(result, str):
+                                            # True = simple approval; str = user-edited final content
+                                            result = agent_result
+                                        elif not result or result is False:
+                                            result = f"Tool '{actual_tool_name}' proposal was rejected by the user."
+                                        elif isinstance(result, dict) and not result.get("approved", True):
+                                            reason = result.get("reason", "")
+                                            result = (
+                                                f"Tool '{actual_tool_name}' proposal was rejected by the user."
+                                                + (f" User feedback: {reason}" if reason else "")
+                                            )
+                                elif actual_tool_name == "request_approval":
+                                    # Atomically store ModuleRecord snapshot AND present
+                                    # content to user for approval.  This replaces the
+                                    # old set_project(action="record") which unreliably
+                                    # auto-captured "most recent assistant message".
+                                    import json as _json
+
+                                    # arguments = {tool_name, arguments: {phase, module, ...}}
+                                    inner = arguments.get("arguments", {}) if isinstance(arguments.get("arguments"), dict) else {}
+
+                                    # Store the snapshot immediately
+                                    func = self.tool_functions.get(func_name)
+                                    if func:
+                                        try:
+                                            result_str = func(**arguments)
+                                            result_data = _json.loads(result_str)
+                                        except _json.JSONDecodeError:
+                                            # Tool succeeded but returned non-JSON — accept as-is
+                                            result_data = None
+                                        except Exception:
+                                            result_str = "Error: request_approval tool failed"
+                                            result_data = None
+                                    else:
+                                        result_str = f"Error: unknown tool {func_name}"
+                                        result_data = None
+
+                                    if result_data and result_data.get("status") == "stored":
+                                        confirm_id = str(uuid.uuid4())
+                                        approved = yield {
+                                            "type": "approval_required",
+                                            "confirm_id": confirm_id,
+                                            "call_id": call_id,
+                                            "tool_name": actual_tool_name,
+                                            "phase": result_data.get("phase", ""),
+                                            "module": result_data.get("module", ""),
+                                            "content": result_data.get("content", ""),
+                                            "files": result_data.get("files", []),
+                                            "file_contents": result_data.get("file_contents", {}),
+                                            "summary": inner.get("summary", ""),
+                                            "crystal_id": result_data.get("crystal_id", ""),
+                                        }
+                                        if approved:
+                                            # Could be True or a dict {"approved": true, ...}
+                                            is_approved = approved if isinstance(approved, bool) else approved.get("approved", True)
+                                            if is_approved:
+                                                result = (
+                                                    f"Approved. Snapshot stored: "
+                                                    f"{result_data.get('crystal_id', '')}. "
+                                                    f"Now call crystallize(...) to store the "
+                                                    f"final crystal product."
+                                                )
+                                                restart = True
+                                                print(
+                                                    f"[Restart] request_approval approved "
+                                                    f"(phase={result_data.get('phase', '')}, "
+                                                    f"module={result_data.get('module', '')}), "
+                                                    f"restarting outer loop",
+                                                    file=sys.stderr,
+                                                )
+                                            else:
+                                                reason = approved.get("reason", "") if isinstance(approved, dict) else ""
+                                                result = (
+                                                    f"Rejected. The snapshot was stored but "
+                                                    f"the user wants changes."
+                                                    + (f" User feedback: {reason}" if reason else "")
+                                                    + f" Please revise the {result_data.get('phase', '')} output "
+                                                    f"for module '{result_data.get('module', '')}' "
+                                                    f"and call request_approval again."
+                                                )
+                                        else:
+                                            result = (
+                                                f"Rejected. The snapshot was stored but "
+                                                f"the user wants changes. Please revise "
+                                                f"the {result_data.get('phase', '')} output "
+                                                f"for module '{result_data.get('module', '')}' "
+                                                f"and call request_approval again."
+                                            )
+                                    else:
+                                        result = result_str
+                                else:
+                                    # Normal execution (no confirmation needed)
+                                    func = self.tool_functions.get(func_name)
+                                    if func:
+                                        result = func(**arguments)
+                                    else:
+                                        result = f"Error: unknown tool {func_name}"
+
+                                # 4. Send tool result event (updates UI)
+                                yield {
+                                    "type": "tool_result",
+                                    "call_id": call_id,
+                                    "result": str(result)
+                                    if result is not None
+                                    else "No result",
+                                }
+
+                                # 4.5 set_project: exit the generator so the user can inject
+                                #     the next prompt with fresh phase/crystal state.
+                                #     (Do NOT restart — that would waste an API call in
+                                #      a context the user hasn't had a chance to shape.)
+                                if actual_tool_name == "set_project" and result and "Error" not in str(result):
+                                    action = arguments.get("arguments", {}).get("action", "activate")
+
+                                    if action == "activate" and state.active_project:
+                                        _should_exit = True
+                                        yield {
+                                            "type": "project_state",
+                                            "active": True,
+                                            "project_id": state.active_project.get("project_id", ""),
+                                            "phase": state.active_project.get("phase", ""),
+                                            "module": state.active_project.get("module", ""),
+                                        }
+                                        yield str(result)
+
+                                    elif action == "deactivate":
+                                        _should_exit = True
+                                        yield {
+                                            "type": "project_state",
+                                            "active": False,
+                                        }
+                                        yield str(result)
+
+                                # Add tool execution result to both current API messages and persistent history
+                                tool_message = {
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                                    "content": str(result),
+                                }
+                            except Exception as e:
+                                # Catch any exception (including from tool functions) and turn into error message
+                                error_content = (
+                                    f"Tool execution error: {type(e).__name__}: {str(e)}"
+                                )
+                                # Try to get call_id if available, otherwise use fallback
+                                call_id = tool_call.get("id", "unknown")
+                                yield {
+                                    "type": "tool_result",
+                                    "call_id": call_id,
+                                    "result": error_content,
+                                }
+                                tool_message = {
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                                    "content": error_content,
+                                }
+                            finally:
+                                try:
+                                    if tool_message:
+                                        tool_messages.append(tool_message)
+                                except Exception:
+                                    pass
+
+                        # 5. Always persist assistant message and tool results to history.
+                        #    This must happen before the restart check so the outer
+                        #    loop's _build_context() picks them up via self.messages[1:].
                         extra = {}
                         if assistant_message.get("reasoning_content"):
                             extra["reasoning_content"] = assistant_message["reasoning_content"]
                         if assistant_message.get("tool_calls") is not None:
                             extra["tool_calls"] = assistant_message["tool_calls"]
                         self._append_message("assistant", full_content, **extra)
-                        self._save_messages()
+                        for tm in tool_messages:
+                            self._append_message("tool", tm["content"], tool_call_id=tm["tool_call_id"])
 
-                        # CrystalObserver auto-extraction (best-effort, never blocks)
-                        if self.crystal_observer and state.active_project:
-                            try:
-                                turn_msgs = [
-                                    m for m in self.messages[-8:]
-                                    if m.get("role") in ("user", "assistant", "tool")
-                                ]
-                                cid = self.crystal_observer.analyze_turn(
-                                    turn_msgs, state.active_project
-                                )
-                                if cid:
-                                    print(
-                                        f"[CrystalObserver] Auto-extracted: {cid}",
-                                        file=sys.stderr,
-                                    )
-                            except Exception as e:
-                                print(
-                                    f"[CrystalObserver] Non-fatal error: {e}",
-                                    file=sys.stderr,
-                                )
-
-                        return
-
-                    # Execute tool calls one by one
-                    tool_messages = []
-                    for tool_call in tool_calls_data.values():
-                        tool_message = None
-                        try:
-                            func_name = tool_call["function"]["name"]
-
-                            try:
-                                arguments = json.loads(
-                                    tool_call["function"]["arguments"]
-                                )
-                            except json.JSONDecodeError as e:
-                                # Feed error back to model and continue
-                                raise ValueError(
-                                    f"JSON parsing error: {e}. Raw arguments: {tool_call['function']['arguments']}"
-                                )
-
-                            # Guard against null arguments from malformed tool calls
-                            if arguments is None:
-                                arguments = {}
-
-                            # If the model directly called a built-in tool name (e.g., time, read), automatically convert to tools call
-                            if func_name != "tools" and "/" not in func_name:
-                                # Construct new arguments: tool_name is the original function name, arguments are the original parameters
-                                new_arguments = {
-                                    "tool_name": func_name,
-                                    "arguments": arguments,
-                                }
-                                # Update tool_call object
-                                tool_call["function"]["name"] = "tools"
-                                tool_call["function"]["arguments"] = json.dumps(
-                                    new_arguments, ensure_ascii=False
-                                )
-                                func_name = "tools"
-                                arguments = new_arguments
-
-                            # Determine the actual tool name
-                            actual_tool_name = None
-                            if func_name == "tools":
-                                # Extract tool_name from arguments (when wrapped)
-                                actual_tool_name = arguments.get("tool_name")
-                            else:
-                                actual_tool_name = func_name
-
-                            # 1. Send tool_call event first (shows "Using xxx...")
-                            call_id = tool_call["id"]
-                            yield {
-                                "type": "tool_call",
-                                "call_id": call_id,
-                                "tool_name": actual_tool_name,
-                                "arguments": arguments,
-                                "result": None,  # No result yet
-                            }
-
-                            result = None
-                            # 2. Handle tool execution based on type
-                            if actual_tool_name == "command":
-                                # Command tools require user confirmation
-                                confirm_id = str(uuid.uuid4())
-                                # 3. Send confirmation request event
-                                approved = yield {
-                                    "type": "confirmation_required",
-                                    "confirm_id": confirm_id,
-                                    "call_id": call_id,
-                                    "tool_name": actual_tool_name,
-                                    "arguments": arguments,
-                                }
-                                if approved:
-                                    # Execute the tool
-                                    func = self.tool_functions.get(func_name)
-                                    if func:
-                                        result = func(**arguments)
-                                    else:
-                                        result = f"Error: unknown tool {func_name}"
-                                else:
-                                    # User rejected
-                                    result = f"Tool '{actual_tool_name}' execution was rejected by the user."
-                            elif actual_tool_name == "write":
-                                # Write tools use proposal-review-overwrite mode
-                                # First, execute the tool to get the AI's suggested content
-                                func = self.tool_functions.get(func_name)
-                                if func:
-                                    ai_content = func(**arguments)
-                                else:
-                                    ai_content = f"Error: unknown tool {func_name}"
-                                confirm_id = str(uuid.uuid4())
-                                # Send proposal to frontend, wait for user's final content
-                                result = yield {
-                                    "type": "write_proposal",
-                                    "confirm_id": confirm_id,
-                                    "call_id": call_id,
-                                    "tool_name": actual_tool_name,
-                                    "arguments": arguments,
-                                    "content": str(ai_content),
-                                }
-                                # result is the final_content string from frontend, or False if rejected
-                                if not result or result is False:
-                                    result = f"Tool '{actual_tool_name}' proposal was rejected by the user."
-                            else:
-                                # Normal execution (no confirmation needed)
-                                func = self.tool_functions.get(func_name)
-                                if func:
-                                    result = func(**arguments)
-                                else:
-                                    result = f"Error: unknown tool {func_name}"
-
-                            # 4. Send tool result event (updates UI)
-                            yield {
-                                "type": "tool_result",
-                                "call_id": call_id,
-                                "result": str(result)
-                                if result is not None
-                                else "No result",
-                            }
-
-                            # Add tool execution result to both current API messages and persistent history
-                            tool_message = {
-                                "role": "tool",
-                                "tool_call_id": call_id,
-                                "content": str(result),
-                            }
-                        except Exception as e:
-                            # Catch any exception (including from tool functions) and turn into error message
-                            error_content = (
-                                f"Tool execution error: {type(e).__name__}: {str(e)}"
-                            )
-                            # Try to get call_id if available, otherwise use fallback
-                            call_id = tool_call.get("id", "unknown")
-                            yield {
-                                "type": "tool_result",
-                                "call_id": call_id,
-                                "result": error_content,
-                            }
-                            tool_message = {
-                                "role": "tool",
-                                "tool_call_id": call_id,
-                                "content": error_content,
-                            }
-                        finally:
-                            if tool_message:
-                                tool_messages.append(tool_message)
-
-                    current_api_messages.extend(tool_messages)
-                    extra = {}
-                    if assistant_message.get("reasoning_content"):
-                        extra["reasoning_content"] = assistant_message["reasoning_content"]
-                    if assistant_message.get("tool_calls") is not None:
-                        extra["tool_calls"] = assistant_message["tool_calls"]
-                    self._append_message("assistant", full_content, **extra)
-                    for tm in tool_messages:
-                        self._append_message("tool", tm["content"], tool_call_id=tm["tool_call_id"])
-
-                        # Monitor crystallize(ImplCrystal) for module completion detection
+                        # 6. Monitor crystallize(ImplCrystal) for module completion detection
                         if self.crystal_store and state.active_project:
-                            cid = tm.get("tool_call_id", "")
-                            # Find the corresponding assistant message to check tool name
-                            for tc in (assistant_message.get("tool_calls") or []):
-                                if tc["id"] == cid:
-                                    try:
-                                        tc_args = json.loads(tc["function"]["arguments"])
-                                    except (json.JSONDecodeError, KeyError):
-                                        continue
-                                    if (tc_args.get("tool_name") == "crystallize"
-                                            and tc_args.get("arguments", {}).get("crystal_type") == "ImplCrystal"):
-                                        module_name = tc_args.get("arguments", {}).get("module")
-                                        project_id = state.active_project.get("project_id")
-                                        if project_id and module_name:
-                                            self._mark_module_pending_completion(project_id, module_name)
-                                    break
+                            for tm in tool_messages:
+                                cid = tm.get("tool_call_id", "")
+                                for tc in (assistant_message.get("tool_calls") or []):
+                                    if tc["id"] == cid:
+                                        try:
+                                            tc_args = json.loads(tc["function"]["arguments"])
+                                        except (json.JSONDecodeError, KeyError):
+                                            continue
+                                        if (tc_args.get("tool_name") == "crystallize"
+                                                and tc_args.get("arguments", {}).get("crystal_type") == "ImplCrystal"):
+                                            module_name = tc_args.get("arguments", {}).get("module")
+                                            project_id = state.active_project.get("project_id")
+                                            if project_id and module_name:
+                                                self._mark_module_pending_completion(project_id, module_name)
+                                        break
 
-                except Exception as e:
-                    # If API call fails due to context length, compress and retry
-                    error_str = str(e).lower()
-                    if (
-                        "context length" in error_str
-                        or "token" in error_str
-                        or "too long" in error_str
-                    ):
-                        # Compress messages and retry
-                        self.memory()
-                        # Rebuild API messages with compressed history
-                        current_api_messages = self._build_context(msg, relevant)
-                        continue
-                    else:
-                        # Re-raise other exceptions
-                        raise
+                        # 7. If a tool signalled restart or exit, leave the inner loop.
+                        if restart or _should_exit:
+                            break
 
-            # Max iterations exhausted — save current state and return
-            self._save_messages()
-            return
+                        # 8. Otherwise feed tool results back into the API message
+                        #    list and continue the tool-calling loop.
+                        current_api_messages.extend(tool_messages)
+
+                    except Exception as e:
+                        # If API call fails due to context length, compress and retry
+                        error_str = str(e).lower()
+                        if (
+                            "context length" in error_str
+                            or "too long" in error_str
+                            or ("token" in error_str and "context" in error_str)
+                        ):
+                            print(
+                                f"[Memory] Reactive compression triggered by context error: {str(e)[:120]}",
+                                file=sys.stderr,
+                            )
+                            # Compress messages and retry
+                            before_count = len(self.messages)
+                            self.memory()
+                            after_count = len(self.messages)
+                            cut_count = before_count - after_count
+                            print(
+                                f"[Memory] Reactive result: {before_count}→{after_count} "
+                                f"(cut {cut_count} messages)",
+                                file=sys.stderr,
+                            )
+                            # Save flags before _build_context (which may consume
+                            # them), then restore so the outer loop still sees them.
+                            _saved_switch = state.module_switch_notice
+                            _saved_phase_trans = state.phase_transition_notice
+                            _saved_restart = restart
+                            _saved_exit = _should_exit
+                            current_api_messages = self._build_context(msg, relevant)
+                            state.module_switch_notice = _saved_switch
+                            state.phase_transition_notice = _saved_phase_trans
+                            restart = _saved_restart
+                            _should_exit = _saved_exit
+                            # Clear injection notices without re-yielding — they
+                            # were already sent at the start of this outer iteration.
+                            self._last_injections = []
+                            # Yield compression notice to frontend (only if something was cut)
+                            if cut_count > 0:
+                                yield {
+                                    "type": "compression",
+                                    "cut_messages": cut_count,
+                                    "remaining_messages": after_count,
+                                }
+                            iteration -= 1  # compression retry doesn't consume iteration budget
+                            continue
+                        else:
+                            # Re-raise other exceptions
+                            raise
+
+                if restart:
+                    # Restart outer loop to rebuild context with updated
+                    # phase/crystal/module state from request_approval.
+                    continue
+
+                # set_project exit or normal completion — save and return
+                if self._turn_usage["total"] > 0:
+                    yield {
+                        "type": "token_usage",
+                        "input_tokens": self._turn_usage["input"],
+                        "output_tokens": self._turn_usage["output"],
+                        "total_tokens": self._turn_usage["total"],
+                    }
+                self._save_messages()
+                return
 
         except GeneratorExit:
             # User stopped; keep committed messages, clean orphans
@@ -992,6 +1755,7 @@ class FranxAgent:
             return
 
         finally:
+            self._compression_cooldown = 0  # Reset for next turn
             self._input_lock.release()
 
     def _find_safe_cut_index(self):
@@ -1012,7 +1776,7 @@ class FranxAgent:
         # Only IDs with both call and result matter for safety
         paired_ids = set(call_positions.keys()) & set(result_positions.keys())
 
-        for cut_idx in range(2, len(self.messages)):
+        for cut_idx in range(2, len(self.messages) + 1):
             safe = True
             for cid in paired_ids:
                 call_before = call_positions[cid] < cut_idx
@@ -1030,18 +1794,26 @@ class FranxAgent:
 
         Appends a system marker message so the model knows to prompt the user
         for explicit archive confirmation (e.g. \"确认归档\").
+
+        Only tracks one module at a time — if multiple ImplCrystals complete
+        in the same turn, the last one wins. This is an acceptable limitation
+        since multiple module completions in a single turn are extremely rare.
         """
         self.pending_completion = {
             "project_id": project_id,
             "module": module_name,
         }
-        # Append a visible marker — model sees this and should ask user to confirm
+        # Avoid duplicate markers — check if one already exists for this module
+        marker_content = (
+            f"[模块完成标记] {module_name} 的实现已通过 ImplCrystal 记录。"
+            f"请在回复末尾询问用户是否确认归档该模块（回复\"确认归档\"以归档）。"
+        )
+        for m in self.messages:
+            if m.get("role") == "system" and m.get("content") == marker_content:
+                return
         self.messages.append({
             "role": "system",
-            "content": (
-                f"[模块完成标记] {module_name} 的实现已通过 ImplCrystal 记录。"
-                f"请在回复末尾询问用户是否确认归档该模块（回复\"确认归档\"以归档）。"
-            ),
+            "content": marker_content,
         })
 
     def _detect_completion_confirmation(self, msg: str) -> bool:
@@ -1126,7 +1898,7 @@ class FranxAgent:
         if not atomic:
             return 2  # No constraints, safe to cut at index 2
 
-        for cut_idx in range(2, len(self.messages)):
+        for cut_idx in range(2, len(self.messages) + 1):
             safe = True
             for start, end in atomic:
                 if start < cut_idx <= end:
@@ -1148,7 +1920,11 @@ class FranxAgent:
         self.message_meta = new_meta
 
     def _build_module_summary(self, project_id: str, module_name: str) -> str | None:
-        """Build an archive summary for a module from CrystalStore."""
+        """Build an archive summary for a module from CrystalStore.
+
+        Uses ContractCrystal, LogicCrystal, ImplCrystal when available.
+        Falls back to ModuleRecord data when primary crystals are missing.
+        """
         if not self.crystal_store:
             return None
 
@@ -1161,6 +1937,21 @@ class FranxAgent:
         impls = self.crystal_store.get_active_crystals(
             project_id=project_id, crystal_type="ImplCrystal", module=module_name
         )
+
+        # ModuleRecord fallback
+        records = self.crystal_store.get_module_records(project_id)
+        l3_records = [
+            r for r in records
+            if r.get("module") == module_name
+            and isinstance(r.get("content"), dict)
+            and r["content"].get("record_type") == "L3_snapshot"
+        ]
+        l7_records = [
+            r for r in records
+            if r.get("module") == module_name
+            and isinstance(r.get("content"), dict)
+            and r["content"].get("record_type") == "L7_snapshot"
+        ]
 
         lines = [f"📦 模块 `{module_name}` 已归档", ""]
 
@@ -1176,14 +1967,32 @@ class FranxAgent:
             if post:
                 lines.append(f"  后置条件：{', '.join(post)}")
             lines.append("")
+        elif l3_records:
+            r = l3_records[0]
+            rc = r["content"]
+            sig = rc.get("contract_signature", "")
+            if sig:
+                lines.append(f"**L3 契约**：{sig}")
+                reneg = rc.get("renegotiation_notes", "")
+                if reneg:
+                    lines.append(f"  复议记录：{reneg}")
+                lines.append("")
 
         if logic:
             l = logic[0]
             content = l.get("content", {}) if isinstance(l.get("content"), dict) else {}
             steps = content.get("algorithm_steps", [])
             if steps:
+                if isinstance(steps[0], dict):
+                    steps = [s.get("step", s.get("description", str(s))) for s in steps]
                 steps_str = " → ".join(steps[:6])
                 lines.append(f"**L4 算法**：{steps_str}")
+                lines.append("")
+        elif l7_records:
+            r = l7_records[0]
+            algo = r["content"].get("algorithm_summary", "")
+            if algo:
+                lines.append(f"**算法摘要**：{algo}")
                 lines.append("")
 
         if impls:
@@ -1192,14 +2001,32 @@ class FranxAgent:
             lang = impl_content.get("language", "")
             lines.append(f"**L7 实现**：{imp['name']}{' (' + lang + ')' if lang else ''}，通过最小测试")
             lines.append("")
+        elif l7_records:
+            r = l7_records[0]
+            files = r["content"].get("impl_files", [])
+            tests = r["content"].get("test_results", "")
+            if files:
+                lines.append(f"**实现文件**：{', '.join(files[:5])}")
+            if tests:
+                lines.append(f"**测试结果**：{tests}")
+            lines.append("")
 
-        lines.append("**变更记录**：无契约复议")
+        # Renegotiation notes
+        reneg_notes = ""
+        for rec in l3_records + l7_records:
+            notes = rec.get("content", {}).get("renegotiation_notes", "")
+            if notes:
+                reneg_notes += f"  - {notes}\n"
+        lines.append(f"**变更记录**：{reneg_notes if reneg_notes else '无契约复议'}")
         lines.append("")
+
         crystal_refs = []
         for c in contracts[:1]:
             crystal_refs.append(f"contract:{module_name}:{c['name']}")
         for imp in impls[:1]:
             crystal_refs.append(f"impl:{module_name}:{imp['name']}")
+        for rec in l3_records[:1]:
+            crystal_refs.append(f"modrec:{module_name}:{rec['name']}")
         if crystal_refs:
             lines.append(f"🔗 相关结晶：{', '.join(crystal_refs)}")
 
@@ -1274,8 +2101,8 @@ class FranxAgent:
 
         pi = self.pending_completion
         archived = self._archive_module(pi["project_id"], pi["module"])
-        self.pending_completion = None
         if archived:
+            self.pending_completion = None
             self._compact_messages()
         return archived
 
@@ -1283,17 +2110,242 @@ class FranxAgent:
         """Trigger garbage collection of replaced message list segments."""
         self._save_messages()
 
-    def _build_degradation_summary(self, dropped_count: int) -> dict | None:
-        """Build a system message summarizing active crystals after compression."""
+    def _build_recommend_context(self, project_id: str, current_module: str) -> str:
+        """Build context showing recommended next modules and their L3 contracts.
+
+        Reads the DependencyGraphCrystal to find modules whose dependencies are
+        all satisfied, then injects their L3 contracts so the agent knows what
+        it can work on after finishing the current module.
+        """
+        if not self.crystal_store:
+            return ""
+
+        import json as _json
+
+        dep_crystals = self.crystal_store.get_active_crystals(
+            project_id=project_id, crystal_type="DependencyGraphCrystal"
+        )
+        if not dep_crystals:
+            return ""
+
+        graph_data = dep_crystals[0].get("content", {})
+        if isinstance(graph_data, str):
+            try:
+                graph_data = _json.loads(graph_data)
+            except (_json.JSONDecodeError, TypeError):
+                return ""
+
+        graph = graph_data.get("graph", {})
+        module_status = graph_data.get("module_status", {})
+
+        if not graph:
+            return ""
+
+        # Extract completed modules from module_status
+        completed: set[str] = set()
+        for mod, status in module_status.items():
+            if status == "implemented":
+                completed.add(mod)
+
+        from knowledge.dependency import recommend_next
+
+        ready = recommend_next(graph, completed)
+        # Filter out current module and already-completed
+        ready = [m for m in ready if m != current_module and m not in completed]
+        if not ready:
+            return ""
+
+        lines = [
+            "## 📋 推荐后续模块",
+            "",
+            "以下模块的所有依赖已满足，可在完成当前模块后开展工作：",
+            "",
+        ]
+        for mod in ready[:5]:
+            contracts = self.crystal_store.get_active_crystals(
+                project_id=project_id,
+                crystal_type="ContractCrystal",
+                module=mod,
+            )
+            if contracts:
+                c = contracts[0]
+                content = c.get("content", {})
+                if isinstance(content, str):
+                    try:
+                        content = _json.loads(content)
+                    except (_json.JSONDecodeError, TypeError):
+                        content = {}
+                lines.append(f"### {mod}")
+                lines.append(f"签名: `{content.get('signature', '?')}`")
+                pre = content.get("preconditions", "")
+                if pre:
+                    lines.append(f"- Pre: {pre}")
+                post = content.get("postconditions", "")
+                if post:
+                    lines.append(f"- Post: {post}")
+            else:
+                lines.append(f"### {mod}")
+                lines.append("(L3 契约尚未建立)")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _get_compression_client(self):
+        """Return (client, model) preferring lightweight model for compression summaries.
+
+        Falls back to the main model when lightweight is unavailable.
+        """
+        try:
+            from knowledge.lightweight import is_available, get_model as _lw_model
+            from knowledge.lightweight import _get_client as _lw_client
+            if is_available():
+                return _lw_client(), _lw_model()
+        except Exception:
+            pass
+        return self.client, self.model
+
+    def _reinject_core_skill(self):
+        """Re-inject the idea-to-code-sculpting skill after compression.
+
+        Compression drops old messages including the skill content loaded via
+        recall. Without re-injection the model forgets the L0-L8 workflow and
+        defaults to generic behavior. This reads the skill file and inserts
+        a condensed version (~4K chars) of the core model + non-negotiable
+        principles directly after the base system prompt.
+
+        Skips if the skill content is already present in recent messages (dedup).
+        """
+        if not state.active_project:
+            return
+
+        skill_path = os.path.join(
+            os.path.dirname(__file__),
+            "..", "knowledge", "raw_skills", "idea-to-code-sculpting.md",
+        )
+        try:
+            with open(skill_path, "r", encoding="utf-8") as f:
+                skill_text = f.read()
+        except (FileNotFoundError, PermissionError, OSError):
+            print("[SkillReinject] Skill file not found, skipping", file=sys.stderr)
+            return
+
+        # Extract core sections: the layer model (L0-L8), quick path, crystal
+        # system, approval guidelines, and non-negotiable principles.
+        # We skip the detailed per-phase instructions (Phase 1/2/3) since the
+        # crystal context covers the current phase specifics.
+        lines = skill_text.split("\n")
+        sections = []
+        in_section = False
+        section_buf = []
+        keep_sections = {
+            "核心模型：逐层去噪", "快速路径选择", "Crystal Memory System",
+            "审批助手行为准则", "不可违背的工作原则",
+        }
+        current_heading = None
+
+        for line in lines:
+            if line.startswith("## "):
+                if in_section and section_buf:
+                    sections.append("\n".join(section_buf))
+                    section_buf = []
+                heading = line[3:].strip()
+                in_section = heading in keep_sections
+                current_heading = heading
+                if in_section:
+                    section_buf.append(line)
+            elif in_section:
+                section_buf.append(line)
+
+        if section_buf:
+            sections.append("\n".join(section_buf))
+
+        if not sections:
+            return
+
+        condensed = "\n\n".join(sections)
+
+        # Cap at ~4000 chars to avoid re-filling the context we just freed
+        if len(condensed) > 4200:
+            condensed = condensed[:4000] + "\n\n[... skill truncated, use recall for full content ...]"
+
+        # Dedup: skip if any recent message already contains a substantial
+        # portion of this skill (checked via the "核心模型：逐层去噪" marker)
+        for m in self.messages[-6:]:
+            if isinstance(m.get("content"), str) and "核心模型：逐层去噪" in m["content"]:
+                print("[SkillReinject] Skill already present, skipping", file=sys.stderr)
+                return
+
+        skill_msg = {
+            "role": "system",
+            "content": (
+                "## 📋 核心开发工作流（压缩后重新注入）\n\n"
+                "Context was compressed. Below is the condensed "
+                "idea-to-code-sculpting workflow — follow these rules.\n\n"
+                + condensed
+            ),
+        }
+        # Insert at index 1, right after the base system prompt
+        if len(self.messages) > 1:
+            self.messages.insert(1, skill_msg)
+        else:
+            self.messages.append(skill_msg)
+        print(
+            f"[SkillReinject] Core skill re-injected ({len(condensed)} chars)",
+            file=sys.stderr,
+        )
+
+    def _build_degradation_summary(self, dropped_messages: list[dict],
+                                     dropped_count: int) -> dict | None:
+        """Build a system message summarising dropped messages after compression.
+
+        Uses LLM-driven compression with the reactive prompt when possible,
+        falling back to a static crystal-based summary if the LLM call fails
+        or if no crystal store is active.
+        """
+        if not dropped_messages:
+            return None
+
+        # Try LLM-driven compression first
+        try:
+            msgs_text = "\n\n".join(
+                f"[{m.get('role', '?')}]: {str(m.get('content', ''))[:2000]}"
+                for m in dropped_messages[-40:]  # cap to avoid blowing the prompt
+            )
+            prompt = COMPRESSION_PROMPT_REACTIVE + f"\n\nConversation to compress:\n{msgs_text}"
+            lw_client, lw_model = self._get_compression_client()
+            resp = lw_client.chat.completions.create(
+                model=lw_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                stream=False,
+            )
+            if hasattr(resp, "usage") and resp.usage:
+                u = resp.usage
+                self._turn_usage["input"] += u.prompt_tokens or 0
+                self._turn_usage["output"] += u.completion_tokens or 0
+                self._turn_usage["total"] += u.total_tokens or 0
+            summary_text = resp.choices[0].message.content
+            if summary_text and len(summary_text) > 50:
+                return {"role": "system", "content": summary_text}
+        except Exception as e:
+            print(f"[Compression] LLM summary failed ({e}), falling back to static",
+                  file=sys.stderr)
+
+        # Fallback: static crystal-based summary
         if not self.crystal_store or not state.active_project:
             return None
 
-        project_id = state.active_project["project_id"]
+        project_id = state.active_project.get("project_id", "")
+        module = state.active_project.get("module", "")
         contracts = self.crystal_store.get_active_crystals(
-            project_id=project_id, crystal_type="ContractCrystal"
+            project_id=project_id, crystal_type="ContractCrystal", module=module or None
         )
+        if not contracts:
+            contracts = self.crystal_store.get_active_crystals(
+                project_id=project_id, crystal_type="ContractCrystal"
+            )
         traces = self.crystal_store.get_active_crystals(
-            project_id=project_id, crystal_type="TraceCrystal"
+            project_id=project_id, crystal_type="TraceCrystal", module=module or None
         )
 
         if not contracts and not traces:
@@ -1304,6 +2356,8 @@ class FranxAgent:
             "",
             "Engineering decisions below remain locked. Do not redesign or contradict:",
         ]
+        if module:
+            lines.append(f"(Module: {module})")
         for c in contracts[:8]:
             content = c.get("content", {}) if isinstance(c.get("content"), dict) else {}
             sig = content.get("signature", c["name"])
@@ -1314,20 +2368,224 @@ class FranxAgent:
             lines.append("Known failure patterns — avoid these root causes:")
             for t in traces[:5]:
                 content = t.get("content", {}) if isinstance(t.get("content"), dict) else {}
-                root = content.get("root_cause", "")
+                root = content.get("root_cause") or ""
                 if root:
                     lines.append(f"- {t['name']}: {root}")
 
         return {"role": "system", "content": "\n".join(lines)}
 
+    def _compress_module_done(self, module_name: str) -> tuple[str | None, int]:
+        """Generate an LLM summary after a module completes L7.
+
+        Called when the user confirms module completion.  The summary
+        condenses the L4-L7 design process into a compact record so the
+        next module starts with a clean context.
+
+        Returns (summary, max_idx) where max_idx is the highest message
+        index covered by this compression, used by _proactive_cut to find
+        the nearest safe cut point.
+        """
+        if not self.crystal_store or not state.active_project:
+            return None, 0
+
+        project_id = state.active_project.get("project_id", "")
+
+        # Gather module-specific messages (L4-L7 for this module)
+        relevant = []
+        max_idx = 0
+        for i, msg in enumerate(self.messages):
+            meta = self.message_meta.get(i, {})
+            if meta.get("module") == module_name and meta.get("chain_id"):
+                relevant.append(msg)
+                max_idx = max(max_idx, i)
+
+        if len(relevant) < 3:
+            return None, max_idx
+
+        msgs_text = "\n\n".join(
+            f"[{m.get('role', '?')}]: {str(m.get('content', ''))[:2000]}"
+            for m in relevant[-30:]
+        )
+        prompt = (COMPRESSION_PROMPT_MODULE_DONE
+                  .replace("[ModuleName]", module_name)
+                  + f"\n\nModule conversation:\n{msgs_text}")
+
+        try:
+            lw_client, lw_model = self._get_compression_client()
+            resp = lw_client.chat.completions.create(
+                model=lw_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                stream=False,
+            )
+            if hasattr(resp, "usage") and resp.usage:
+                u = resp.usage
+                self._turn_usage["input"] += u.prompt_tokens or 0
+                self._turn_usage["output"] += u.completion_tokens or 0
+                self._turn_usage["total"] += u.total_tokens or 0
+            return resp.choices[0].message.content, max_idx
+        except Exception as e:
+            print(f"[Compression] Module-done summary failed: {e}", file=sys.stderr)
+            return None, max_idx
+
+    def _compress_l3_done(self) -> tuple[str | None, int]:
+        """Generate an LLM summary after all L3 contracts are approved.
+
+        Called when transitioning from L3 to per-module implementation.
+        Condenses all L3 negotiation into a compact contract catalog.
+
+        Returns (summary, max_idx) where max_idx is the highest message
+        index covered by this compression, used by _proactive_cut to find
+        the nearest safe cut point.
+        """
+        if not self.crystal_store or not state.active_project:
+            return None, 0
+
+        project_id = state.active_project.get("project_id", "")
+
+        # Gather L3-related messages
+        relevant = []
+        max_idx = 0
+        for i, msg in enumerate(self.messages):
+            meta = self.message_meta.get(i, {})
+            if meta.get("skill_layer") == "L3" and meta.get("project_id") == project_id:
+                relevant.append(msg)
+                max_idx = max(max_idx, i)
+
+        if len(relevant) < 5:
+            return None, max_idx
+
+        msgs_text = "\n\n".join(
+            f"[{m.get('role', '?')}]: {str(m.get('content', ''))[:2000]}"
+            for m in relevant[-40:]
+        )
+        prompt = COMPRESSION_PROMPT_L3_DONE + f"\n\nL3 negotiation history:\n{msgs_text}"
+
+        try:
+            lw_client, lw_model = self._get_compression_client()
+            resp = lw_client.chat.completions.create(
+                model=lw_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                stream=False,
+            )
+            if hasattr(resp, "usage") and resp.usage:
+                u = resp.usage
+                self._turn_usage["input"] += u.prompt_tokens or 0
+                self._turn_usage["output"] += u.completion_tokens or 0
+                self._turn_usage["total"] += u.total_tokens or 0
+            return resp.choices[0].message.content, max_idx
+        except Exception as e:
+            print(f"[Compression] L3-done summary failed: {e}", file=sys.stderr)
+            return None, max_idx
+
+    def _find_nearest_safe_cut(self, target_idx: int) -> int:
+        """Find the nearest index to target_idx that doesn't break any tool pair.
+
+        Extremely relaxed compared to _find_skill_safe_cut_index — only
+        protects tool_call/tool_result pairs, no chain interval protection.
+        Searches bidirectionally from target_idx so the cut happens as close
+        as possible to the desired location.
+        """
+        call_positions = {}
+        result_positions = {}
+        for i, msg in enumerate(self.messages):
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    call_positions[tc["id"]] = i
+            elif msg.get("role") == "tool":
+                cid = msg.get("tool_call_id")
+                if cid:
+                    result_positions[cid] = i
+        paired_ids = set(call_positions.keys()) & set(result_positions.keys())
+
+        if not paired_ids:
+            return target_idx
+
+        max_offset = len(self.messages)
+        for offset in range(max_offset):
+            for candidate in (target_idx - offset, target_idx + offset):
+                if candidate < 2 or candidate >= len(self.messages):
+                    continue
+                safe = True
+                for cid in paired_ids:
+                    call_before = call_positions[cid] < candidate
+                    result_before = result_positions[cid] < candidate
+                    if call_before != result_before:
+                        safe = False
+                        break
+                if safe:
+                    return candidate
+        return target_idx
+
+    def _proactive_cut(self, target_idx: int):
+        """Proactive compression cut near target_idx with relaxed safety.
+
+        Used by phase-transition and module-switch compression paths where
+        the summarised message range is known. Only protects tool pairs
+        (no chain interval protection) since the summary already preserves
+        the essential content of the dropped messages.
+        """
+        if len(self.messages) <= 5:
+            return
+
+        orig_len = len(self.messages)
+        self._clean_orphan_tool_messages()
+
+        cut_idx = self._find_nearest_safe_cut(target_idx)
+        if cut_idx <= 1 or cut_idx >= len(self.messages) - 1:
+            cut_idx = max(2, target_idx)
+
+        dropped = cut_idx - 1
+        print(
+            f"[Memory] Proactive cut: target={target_idx}, actual={cut_idx}, "
+            f"dropping {dropped} of {orig_len} messages",
+            file=sys.stderr,
+        )
+
+        dropped_msgs = self.messages[1:cut_idx]
+        summary = self._build_degradation_summary(dropped_msgs, dropped)
+
+        self.messages = [self.messages[0]] + self.messages[cut_idx:]
+        self._rebuild_meta_after_cut(cut_idx)
+
+        if summary:
+            self.messages.insert(1, summary)
+            shifted_meta = {}
+            for idx, meta in self.message_meta.items():
+                if idx >= 1:
+                    shifted_meta[idx + 1] = meta
+                else:
+                    shifted_meta[idx] = meta
+            self.message_meta = shifted_meta
+
+        # Re-inject core skill after proactive compression
+        self._reinject_core_skill()
+
+        self._clean_orphan_tool_messages()
+
+        print(
+            f"[Memory] Proactive result: {orig_len}→{len(self.messages)} "
+            f"(dropped {dropped})",
+            file=sys.stderr,
+        )
+
     def memory(self):
-        """Hierarchical memory compression with skill-aware chain protection.
+        """Hierarchical memory compression with cooldown and skill protection.
 
         Flow:
+        0. If cooldown is active, skip to force-cut (deeper, one-shot)
         1. Try skill-safe cut (protects approval chains + tool pairs)
         2. If no safe point, archive completed modules to free space, retry
         3. Fallback: original tool-pair-only protection
         4. Last resort: force-cut at midpoint with warning
+
+        After compression, re-injects the core idea-to-code-sculpting skill
+        so the model doesn't forget the workflow after context is dropped.
+
+        Called from two sites:
+        - Reactively: when the API returns a context-length error (preferred)
+        - Proactively: when a module switch is detected (module_switch_notice)
         """
         self._clean_orphan_tool_messages()
 
@@ -1335,33 +2593,65 @@ class FranxAgent:
             return
 
         orig_len = len(self.messages)
+        forced = False
 
-        # Step 1: Try skill-safe cut
-        cut_idx = self._find_skill_safe_cut_index()
-
-        # Step 2: No safe point — try archiving completed modules to free space
-        if cut_idx is None and self.pending_completion:
+        # Cooldown: if we already compressed recently, skip conservative steps
+        # and force a deeper cut to avoid rapid back-to-back compressions.
+        if self._compression_cooldown > 0:
+            self._compression_cooldown -= 1
+            cut_idx = max(2, len(self.messages) // 3)  # Cut deeper on re-trigger
+            forced = True
             print(
-                "[Memory] No safe cut point found, attempting archive of completed modules...",
+                f"[Memory] Cooldown active — force-cut at {cut_idx} "
+                f"({orig_len} messages, dropping ~{cut_idx - 1})",
                 file=sys.stderr,
             )
-            self._archive_completed_modules()
+        else:
+            print(
+                f"[Memory] Attempting compression ({orig_len} messages)...",
+                file=sys.stderr,
+            )
+
+            # Step 1: Try skill-safe cut
             cut_idx = self._find_skill_safe_cut_index()
+            if cut_idx is not None:
+                print(
+                    f"[Memory] Step 1 (skill-safe cut): cut_idx={cut_idx}, "
+                    f"dropping {cut_idx - 1} of {orig_len} messages",
+                    file=sys.stderr,
+                )
 
-        # Step 3: Fallback to original tool-pair protection
-        if cut_idx is None:
-            cut_idx = self._find_safe_cut_index()
+            # Step 2: No safe point — try archiving completed modules to free space
+            if cut_idx is None and self.pending_completion:
+                print(
+                    "[Memory] No safe cut point found, attempting archive of completed modules...",
+                    file=sys.stderr,
+                )
+                self._archive_completed_modules()
+                cut_idx = self._find_skill_safe_cut_index()
 
-        # Step 4: Last resort
-        forced = False
-        if cut_idx is None or cut_idx >= len(self.messages) - 1 or cut_idx <= 1:
-            cut_idx = len(self.messages) // 2 + 1
-            forced = True
+            # Step 3: Fallback to original tool-pair protection
+            if cut_idx is None:
+                print(
+                    "[Memory] Step 2 failed, falling back to Step 3 (tool-pair protection)",
+                    file=sys.stderr,
+                )
+                cut_idx = self._find_safe_cut_index()
+
+            # Step 4: Last resort
+            if cut_idx is None or cut_idx >= len(self.messages) - 1 or cut_idx <= 1:
+                print(
+                    "[Memory] Step 3 failed, using Step 4 (force-cut at midpoint)",
+                    file=sys.stderr,
+                )
+                cut_idx = len(self.messages) // 2 + 1
+                forced = True
 
         dropped = cut_idx - 1
 
-        # Build crystal degradation summary before dropping messages
-        summary = self._build_degradation_summary(dropped)
+        # Build degradation summary before dropping messages (LLM-driven with fallback)
+        dropped_msgs = self.messages[1:cut_idx]
+        summary = self._build_degradation_summary(dropped_msgs, dropped)
 
         self.messages = [self.messages[0]] + self.messages[cut_idx:]
 
@@ -1371,11 +2661,20 @@ class FranxAgent:
         # Inject crystal summary after the base system prompt
         if summary:
             self.messages.insert(1, summary)
-            # Shift metadata indices by 1 to account for inserted summary
+            # Shift metadata indices >= 1 by +1; system prompt at 0 stays
             shifted_meta = {}
             for idx, meta in self.message_meta.items():
-                shifted_meta[idx + 1] = meta
+                if idx >= 1:
+                    shifted_meta[idx + 1] = meta
+                else:
+                    shifted_meta[idx] = meta
             self.message_meta = shifted_meta
+
+        # Re-inject core skill — compression drops loaded skill content
+        self._reinject_core_skill()
+
+        # Set cooldown: prevent another compression this turn
+        self._compression_cooldown = 1
 
         self._clean_orphan_tool_messages()
 

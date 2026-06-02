@@ -18,6 +18,25 @@ This is a supplementary mechanism — the primary path is the crystallize tool.
 import json
 import sys
 
+VALID_CRYSTAL_TYPES = {
+    "ArchCrystal", "ModMap", "ContractCrystal", "LogicCrystal",
+    "SkeletonCrystal", "ImplCrystal", "TraceCrystal", "ModuleRecord",
+    "ExperienceCrystal",
+}
+
+# Required fields per crystal type for content schema validation
+CRYSTAL_REQUIRED_FIELDS = {
+    "ArchCrystal": ("architecture_summary", "tech_stack", "core_flow"),
+    "ModMap": ("modules", "dependencies"),
+    "ContractCrystal": ("signature", "preconditions", "postconditions"),
+    "LogicCrystal": ("algorithm_steps",),
+    "SkeletonCrystal": ("code_skeleton", "language"),
+    "ImplCrystal": ("code", "language"),
+    "TraceCrystal": ("symptom", "root_cause", "fix"),
+    "ModuleRecord": ("record_type",),
+    "ExperienceCrystal": ("title", "summary"),
+}
+
 EXTRACTION_PROMPT = """你是一个结晶提取探针。分析以下对话回合，判断 Agent 是否产出了值得结晶的工程结构化产物。
 
 当前项目: {project_id}
@@ -59,7 +78,7 @@ class CrystalObserver:
     def __init__(self, api_key: str, base_url: str, model: str, crystal_store):
         from openai import OpenAI
 
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=30.0)
         self.model = model
         self.crystal_store = crystal_store
 
@@ -112,7 +131,7 @@ class CrystalObserver:
                 stream=False,
                 extra_body={"thinking": {"type": "disabled"}},
             )
-            result_text = response.choices[0].message.content.strip()
+            result_text = (response.choices[0].message.content or "").strip()
 
             # Strip markdown code fences if present
             if result_text.startswith("```"):
@@ -134,6 +153,24 @@ class CrystalObserver:
             content = result.get("content", {})
 
             if not crystal_type or not content or not isinstance(content, dict):
+                return None
+
+            # Validate crystal_type is a known type
+            if crystal_type not in VALID_CRYSTAL_TYPES:
+                print(
+                    f"[CrystalObserver] Unknown crystal_type '{crystal_type}', skipping",
+                    file=sys.stderr,
+                )
+                return None
+
+            # Validate content has required fields for the crystal type
+            required = CRYSTAL_REQUIRED_FIELDS.get(crystal_type, ())
+            missing = [f for f in required if f not in content]
+            if missing:
+                print(
+                    f"[CrystalObserver] {crystal_type} missing required fields: {missing}, skipping",
+                    file=sys.stderr,
+                )
                 return None
 
             crystal_id = self.crystal_store.put_crystal(

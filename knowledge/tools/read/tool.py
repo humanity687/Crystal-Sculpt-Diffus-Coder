@@ -6,9 +6,15 @@
 
 """
 File Content Reading Tool
-Allows the AI to read the content of a specified file or project structure
+Allows the AI to read the content of a specified file or project structure.
+
+Modes:
+  - all:   read whole file or from offset with limit (default)
+  - lines: read a precise line range
+  - find:  search file content for a query string or regex
 """
 
+import re
 from pathlib import Path
 import json
 import base64
@@ -217,15 +223,16 @@ SKIP_DIRS = {
     "egg-info",
 }
 
+# Maximum characters per output line before truncation
+MAX_LINE_CHARS = 2000
+
 
 def _extract_name(node) -> str:
     """Extract the name of an AST node using tree-sitter fields"""
-    # Prefer 'name' field (works for most languages' class, function, method, etc.)
     name_node = node.child_by_field_name("name")
     if name_node:
         return name_node.text.decode("utf-8")
 
-    # Fallback: for import, export, namespace etc. that lack a name field
     for child in node.children:
         if child.type in ("identifier", "type_identifier", "field_identifier"):
             return child.text.decode("utf-8")
@@ -253,11 +260,9 @@ def _parse_structure(path: Path, content: str) -> str | None:
             display_name = f" {name}" if name else ""
             prefix = "  " * depth + ("├─ " if depth > 0 else "")
             lines.append(f"{prefix}[{node.type}]{display_name} (L{start}-L{end})")
-            # Target node found, continue into its children with depth + 1
             for child in node.children:
                 walk(child, depth + 1)
         else:
-            # Non-target node, continue walking children without increasing depth
             for child in node.children:
                 walk(child, depth)
 
@@ -265,19 +270,11 @@ def _parse_structure(path: Path, content: str) -> str | None:
     return "\n".join(lines) if lines else None
 
 
-def _add_line_numbers(content: str) -> str:
-    """Add line numbers to text"""
-    lines = content.split("\n")
-    width = len(str(len(lines)))
-    return "\n".join(f"{i + 1:{width}}  {line}" for i, line in enumerate(lines))
-
-
 def _scan_project(directory: Path) -> str:
     """Scan project directory, return structure map of all code files"""
     lines = []
 
     for file in sorted(directory.rglob("*")):
-        # Skip hidden and common junk directories
         if any(part in SKIP_DIRS or part.startswith(".") for part in file.parts):
             continue
         if not file.is_file():
@@ -286,8 +283,7 @@ def _scan_project(directory: Path) -> str:
             continue
 
         try:
-            with open(file, "r", encoding="utf-8") as f:
-                content = f.read()
+            content = _read_with_encoding(file)[0]
             structure = _parse_structure(file, content)
             if structure:
                 rel = file.relative_to(directory)
@@ -300,48 +296,216 @@ def _scan_project(directory: Path) -> str:
     return "\n".join(lines) if lines else "No parseable code files found"
 
 
-def read(path: str) -> str:
-    """
-    Read file content or project structure
+# ---------------------------------------------------------------------------
+#  Encoding helpers
+# ---------------------------------------------------------------------------
+
+def _read_with_encoding(file_path: Path) -> tuple:
+    """Read file with automatic encoding detection. Returns (text, encoding)."""
+    raw = file_path.read_bytes()
+
+    # Try UTF-8 first (most common)
+    try:
+        return raw.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        pass
+
+    # Detect with charset-normalizer
+    try:
+        from charset_normalizer import from_bytes
+        result = from_bytes(raw).best()
+        if result:
+            return str(result), result.encoding
+    except Exception:
+        pass
+
+    # Last-resort fallback (never fails)
+    return raw.decode("latin-1"), "latin-1"
+
+
+# ---------------------------------------------------------------------------
+#  Output formatting
+# ---------------------------------------------------------------------------
+
+def _format_lines(
+    lines: list[str],
+    start_num: int = 1,
+    partial_info: str | None = None,
+) -> str:
+    """Format lines with line numbers and optional truncation markers.
 
     Args:
-        path: Full path of the file or directory
-
-    Returns:
-        File content or project structure, returns error message if an error occurs
+        lines: The text lines to format.
+        start_num: Line number for the first line (1-based).
+        partial_info: If set, prepend this as a header marker.
     """
-    try:
-        # Resolve the path and handle user directory symbol (~)
-        p = Path(path).expanduser().resolve()
+    width = max(6, len(str(start_num + len(lines))))
+    out = []
+    if partial_info:
+        out.append(partial_info)
+    for i, line in enumerate(lines):
+        num = start_num + i
+        if len(line) > MAX_LINE_CHARS:
+            line = line[:MAX_LINE_CHARS] + "... [line truncated]"
+        out.append(f"{num:{width}d}| {line}")
+    return "\n".join(out)
 
-        # Check if the path exists
-        if not p.exists():
-            return f"Error: Path does not exist - {p}"
 
-        # Directory: scan project structure
-        if p.is_dir():
-            return _scan_project(p)
+# ---------------------------------------------------------------------------
+#  find mode
+# ---------------------------------------------------------------------------
 
-        # File: read content
-        with open(p, "r", encoding="utf-8") as f:
-            content = f.read()
+def _find_in_file(
+    lines: list[str],
+    query: str,
+    is_regex: bool = False,
+    context_lines: int = 2,
+    max_matches: int = 20,
+) -> str:
+    """Search file content, return match blocks with context and line numbers.
 
-        # Three-tier fallback: parsed + numbered -> numbered only -> raw text
-        try:
-            structure = _parse_structure(p, content)
-            numbered = _add_line_numbers(content)
+    Overlapping context blocks are merged.
+    """
+    # Find matching line indices (0-based)
+    matches = []
+    for idx, line in enumerate(lines):
+        if is_regex:
+            try:
+                if re.search(query, line):
+                    matches.append(idx)
+            except re.error as e:
+                return f"Error: Invalid regular expression — {e}"
+        else:
+            if query in line:
+                matches.append(idx)
+
+    if not matches:
+        return f'(No matches found for "{query}")'
+
+    total = len(matches)
+    truncated = total > max_matches
+    if truncated:
+        matches = matches[:max_matches]
+
+    # Build context ranges, merging overlaps
+    ranges = []
+    for m in matches:
+        start = max(0, m - context_lines)
+        end = min(len(lines) - 1, m + context_lines)
+        if ranges and start <= ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+        else:
+            ranges.append((start, end))
+
+    header = f'--- Matches for "{query}" ---'
+    if truncated:
+        header += f"\n({total} matches found, showing first {max_matches})"
+
+    out = [header]
+    for r_start, r_end in ranges:
+        out.append("")
+        for idx in range(r_start, r_end + 1):
+            marker = ">" if idx in matches else " "
+            num = idx + 1
+            text = lines[idx]
+            if len(text) > MAX_LINE_CHARS:
+                text = text[:MAX_LINE_CHARS] + "... [line truncated]"
+            out.append(f" {marker} {num:6d}| {text}")
+
+    out.append("")
+    out.append("[End of find results]")
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+#  Core read logic
+# ---------------------------------------------------------------------------
+
+def _read_file(
+    file_path: Path,
+    mode: str = "all",
+    offset: int = 1,
+    limit: int = 2000,
+    show_structure: bool = False,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    query: str | None = None,
+    is_regex: bool = False,
+    context_lines: int = 2,
+    max_matches: int = 20,
+) -> str:
+    """Read a file with the given mode and parameters."""
+    content, encoding = _read_with_encoding(file_path)
+    all_lines = content.split("\n")
+    total_lines = len(all_lines)
+
+    # --- find mode ---
+    if mode == "find":
+        if not query:
+            return "Error: 'query' parameter is required for find mode"
+        return _find_in_file(
+            all_lines,
+            query=query,
+            is_regex=is_regex,
+            context_lines=context_lines,
+            max_matches=max_matches,
+        )
+
+    # --- lines mode ---
+    if mode == "lines":
+        if start_line is None or end_line is None:
+            return "Error: 'start_line' and 'end_line' are required for lines mode"
+        if start_line < 1:
+            start_line = 1
+        if end_line < start_line:
+            return f"Error: end_line ({end_line}) must be >= start_line ({start_line})"
+        if start_line > total_lines:
+            return f"Error: start_line ({start_line}) exceeds file length ({total_lines} lines)"
+
+        actual_end = min(end_line, total_lines)
+        selected = all_lines[start_line - 1 : actual_end]
+        partial_info = None
+        if end_line > total_lines:
+            partial_info = f"[PARTIAL view — requested lines {start_line}-{end_line}, file has only {total_lines} lines]"
+
+        result_parts = []
+
+        # Optional structure
+        if show_structure:
+            structure = _parse_structure(file_path, content)
             if structure:
-                return f"structure\n{structure}\n\ncontent\n{numbered}"
-            else:
-                return numbered
-        except Exception:
-            return content
+                result_parts.append(f"structure\n{structure}\n")
 
-    except PermissionError:
-        return f"Error: No permission to read - {path}"
-    except Exception as e:
-        return f"An error occurred while reading: {str(e)}"
+        result_parts.append(_format_lines(selected, start_num=start_line, partial_info=partial_info))
+        return "\n".join(result_parts)
 
+    # --- all mode (default) ---
+    if offset < 1:
+        offset = 1
+    if offset > total_lines:
+        return f"Error: offset ({offset}) exceeds file length ({total_lines} lines)"
+
+    selected = all_lines[offset - 1 : offset - 1 + limit]
+    actual_last = offset - 1 + len(selected)
+    partial_info = None
+    if actual_last < total_lines:
+        partial_info = f"[PARTIAL view — showing lines {offset}-{actual_last} of {total_lines} total]"
+
+    result_parts = []
+
+    # Optional structure
+    if show_structure:
+        structure = _parse_structure(file_path, content)
+        if structure:
+            result_parts.append(f"structure\n{structure}\n")
+
+    result_parts.append(_format_lines(selected, start_num=offset, partial_info=partial_info))
+    return "\n".join(result_parts)
+
+
+# ---------------------------------------------------------------------------
+#  ETT (multimodal) helpers
+# ---------------------------------------------------------------------------
 
 def _get_config():
     """Read ett tool configuration from config.json"""
@@ -381,10 +545,13 @@ def _encode_local_file(path: str) -> str:
 def ett(urls: str) -> str:
     cfg = _get_config()
     prompt = "Please describe the following content in detail"
+    ftype = None
     if urls.endswith((".jpg", ".png", ".gif", ".jpeg")):
         ftype = "image_url"
     if urls.endswith((".mp4", ".webm")):
         ftype = "video_url"
+    if ftype is None:
+        return "Error: unsupported file type. Supported: jpg, png, gif, jpeg, mp4, webm."
     client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
 
     # Parse URLs
@@ -423,7 +590,7 @@ def ett(urls: str) -> str:
                 messages=messages,
                 temperature=cfg["temperature"],
                 stream=False,
-                timeout=60.0,  # Request timeout
+                timeout=60.0,
                 extra_body={"thinking": {"type": "disabled"}}
                 if not cfg["thinking"]
                 else None,
@@ -431,7 +598,6 @@ def ett(urls: str) -> str:
             return response.choices[0].message.content
         except Exception as e:
             error_msg = str(e)
-            # Judge temporary errors: 429, 500, timeout or rate limit keywords
             if (
                 any(
                     code in error_msg for code in ["429", "500", "timed out", "timeout"]
@@ -452,18 +618,76 @@ def ett(urls: str) -> str:
     return "Analysis failed: Maximum retries exceeded, please try again later."
 
 
-def execute(path: str) -> str:
-    # Directory: scan project structure
-    if Path(path).expanduser().is_dir():
-        return read(path)
-    if path.endswith(
-        (".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".doc", ".ppt", ".csv")
-    ):
-        try:
-            return MarkItDown().convert(path).text_content
-        except Exception as e:
-            return f"Failed to convert file to Markdown: {e}"
-    elif path.endswith((".jpg", ".png", ".gif", ".mp4", ".webm", ".jpeg")):
-        return ett(path)
-    else:
-        return read(path)
+# ---------------------------------------------------------------------------
+#  Public entry point
+# ---------------------------------------------------------------------------
+
+def execute(
+    path: str,
+    mode: str = "all",
+    offset: int = 1,
+    limit: int = 2000,
+    show_structure: bool = False,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    query: str | None = None,
+    is_regex: bool = False,
+    context_lines: int = 2,
+    max_matches: int = 20,
+) -> str:
+    """Read file content or project structure.
+
+    Modes:
+      - "all" (default): read whole file or from offset with limit.
+          Accepts: offset, limit, show_structure.
+      - "lines": read a precise line range.
+          Accepts: start_line, end_line, show_structure.
+      - "find": search file content for a string or regex.
+          Accepts: query, is_regex, context_lines, max_matches.
+
+    Directories are scanned for project structure.
+    Document files (.pdf, .docx, etc.) are converted via MarkItDown.
+    Image/video files are analyzed via ETT (multimodal).
+    """
+    try:
+        p = Path(path).expanduser().resolve()
+
+        if not p.exists():
+            return f"Error: File not found: {path}"
+
+        # Directory: scan project structure
+        if p.is_dir():
+            return _scan_project(p)
+
+        # Document files: convert via MarkItDown
+        if p.suffix.lower() in (
+            ".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".doc", ".ppt", ".csv",
+        ):
+            try:
+                return MarkItDown().convert(str(p)).text_content
+            except Exception as e:
+                return f"Failed to convert file to Markdown: {e}"
+
+        # Image/Video files: analyze via ETT
+        if p.suffix.lower() in (".jpg", ".png", ".gif", ".mp4", ".webm", ".jpeg"):
+            return ett(str(p))
+
+        # Text file: use mode-based reading
+        return _read_file(
+            p,
+            mode=mode,
+            offset=offset,
+            limit=limit,
+            show_structure=show_structure,
+            start_line=start_line,
+            end_line=end_line,
+            query=query,
+            is_regex=is_regex,
+            context_lines=context_lines,
+            max_matches=max_matches,
+        )
+
+    except PermissionError:
+        return f"Error: Cannot read file: Permission denied - {path}"
+    except Exception as e:
+        return f"Error: {str(e)}"

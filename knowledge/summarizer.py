@@ -19,26 +19,83 @@ import re
 from datetime import datetime
 
 
-SUMMARY_PROMPT = """你是一个对话摘要探针。将以下用户-AI对话回合压缩为结构化摘要。
+SUMMARY_PROMPT = """你是一个对话摘要探针。将以下用户-AI对话回合压缩为多维层次化摘要。
+
+六维度体系（只包含本轮有实质内容的维度）：
+- architecture（架构）：系统结构、模块划分、组件关系
+- contract（契约）：接口定义、数据格式、前置/后置条件
+- algorithm（算法）：流程逻辑、计算步骤、决策树
+- implementation（实现）：代码细节、语言特性、库使用
+- debug（调试）：错误排查、根因分析、修复方案
+- meta（元认知）：计划制定、进度管理、任务拆分
 
 要求：
-1. title 不超过 20 字，精准概括本轮主题
-2. summary 用 1-2 句话概述核心讨论和结论（≤100 字）
-3. key_points 列出 2-5 个关键决策/发现/产出
+1. title 不超过 15 字，精准概括本轮主题
+2. main_summary 用 1 句话概述核心结论（≤40 字），聚焦"做了什么/决定了什么"
+3. dimensions 列出有实质内容的维度，每个含 dim（六维度之一）和 summary（≤30 字）
+   仅包含本轮实际涉及的维度，不强行填充所有六个
 4. tags 列出 3-6 个关键词或技术术语
-5. 如果本轮讨论与之前对话相关，在 summary 中体现这种延续性
 
 只返回 JSON 对象，不要其他内容：
 {{
   "title": "...",
-  "summary": "...",
-  "key_points": ["...", "..."],
+  "main_summary": "...",
+  "dimensions": [
+    {{"dim": "algorithm", "summary": "JWT采用滑动窗口，每次请求顺延有效期"}},
+    {{"dim": "debug", "summary": "last_activity未含时区导致无限刷新"}}
+  ],
   "tags": ["...", "..."]
 }}
 
 对话回合：
 User: {user_msg}
 AI: {ai_msg}"""
+
+
+EXPERIENCE_GENERATION_PROMPT = """你是一个工程经验提炼师。根据以下项目的模块快照和故障记录，提炼出可跨项目复用的工程经验。
+
+六维度参考价值：
+- architecture（架构）：系统结构、模块划分、组件关系的设计教训
+- contract（契约）：接口定义、数据格式、前置/后置条件的经验
+- algorithm（算法）：流程逻辑、计算步骤、决策树的优化心得
+- implementation（实现）：代码细节、语言特性、库使用的技巧
+- debug（调试）：错误排查、根因分析、修复方案
+- meta（元认知）：计划制定、进度管理、任务拆分的反省
+
+要求：
+1. 每个经验必须基于提供的材料，不能凭空编造
+2. 每个经验的 reference_values 按维度给出具体建议，使用非绝对化表述（"可能是""可以考虑""建议检查"等）
+3. 如果材料不足以提炼有价值的经验，返回空列表 []
+4. 不生成与已有经验高度重复的内容
+5. 每个经验聚焦一个明确的问题→解决→参考价值链条
+6. 只输出 JSON 数组，不要其他内容
+
+已有经验（避免重复）：
+{existing_titles}
+
+项目材料（ModuleRecord + TraceCrystal）：
+{materials}
+
+返回格式：
+[
+  {{
+    "title": "经验标题（≤20字）",
+    "summary": "一句话概述（≤50字）",
+    "problem": "遇到的问题描述",
+    "solution": "解决方案描述",
+    "reference_values": {{
+      "debug": "如果你在调试时看到...可能是...造成的，可以尝试...",
+      "architecture": "在设计...时，可能需要预定义...避免...",
+      "implementation": "实现时注意...",
+      "contract": "接口定义中明确...",
+      "algorithm": "处理流程中确保...",
+      "meta": "项目规划阶段锁定..."
+    }},
+    "tags": ["关键词1", "关键词2"]
+  }}
+]
+只返回有实际参考价值的维度，留空无意义的维度为 ""。
+"""
 
 
 def _make_memory_id(prefix: str, timestamp: str) -> str:
@@ -206,12 +263,21 @@ def _extract_params_format(text: str, tool_name: str, heading_desc: str) -> dict
 def _extract_tool_summary_data(text: str, tool_name: str) -> dict | None:
     """Parse tool README markdown and produce structured summary data.
 
-    Extracts Purpose, Input, Output, and Notes fields from the structured
-    tool documentation format. Converts format markers to Chinese labels
-    so the embedded text is closer to natural Chinese language.
+    Tries lightweight LLM first for high-quality structured extraction;
+    falls back to regex-based extraction if LLM is unavailable or fails.
 
     Returns a dict with title, summary, key_points, tags, or None.
     """
+    # ── Try lightweight LLM first ──────────────────────────────────────
+    try:
+        from .lightweight import summarize_text
+        llm_result = summarize_text(text, tool_name)
+        if llm_result and llm_result.get("summary"):
+            return llm_result
+    except Exception:
+        pass
+
+    # ── Fallback: regex-based extraction ───────────────────────────────
     # Strip HTML comments
     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL).strip()
 
@@ -286,12 +352,21 @@ def _extract_tool_summary_data(text: str, tool_name: str) -> dict | None:
 def _extract_skill_summary_data(text: str, skill_name: str) -> dict | None:
     """Parse skill markdown and produce structured summary data.
 
-    Strips YAML frontmatter, extracts the skill description from the
-    frontmatter or the first substantive paragraph, and builds key_points
-    from the core principles / steps found in the document.
+    Tries lightweight LLM first for high-quality structured extraction;
+    falls back to regex-based extraction if LLM is unavailable or fails.
 
     Returns a dict with title, summary, key_points, tags, or None.
     """
+    # ── Try lightweight LLM first ──────────────────────────────────────
+    try:
+        from .lightweight import summarize_text
+        llm_result = summarize_text(text, skill_name)
+        if llm_result and llm_result.get("summary"):
+            return llm_result
+    except Exception:
+        pass
+
+    # ── Fallback: regex-based extraction ───────────────────────────────
     # Strip frontmatter first
     body = _strip_frontmatter(text)
 
@@ -421,17 +496,17 @@ def generate_conversation_summary(
     # Fallback: extractive summarization (no LLM needed)
     combined = f"User: {user_msg}\nAI: {ai_msg}"
     summary_text = extract_summary_from_text(ai_msg)
-    title = summary_text[:20] if summary_text else "对话摘要"
+    title = summary_text[:15] if summary_text else "对话摘要"
 
-    # For extractive fallback, key_points should not duplicate summary
-    # — just use a short version or empty list
     return {
         "memory_id": memory_id,
         "title": title,
+        "main_summary": summary_text[:40] if summary_text else "",
+        "dimensions": [],
         "summary": summary_text,
         "key_points": [],
         "tags": [],
-        "source_file": f"memories/{timestamp.replace('-', '')}.md",
+        "source_file": f"raw_memories/{timestamp.replace('-', '')}.md",
         "token_count": len(combined) // 4,
         "timestamp": datetime.now().isoformat(),
     }
@@ -462,7 +537,7 @@ def _llm_summarize(
             stream=False,
             extra_body={"thinking": {"type": "disabled"}},
         )
-        result_text = response.choices[0].message.content.strip()
+        result_text = (response.choices[0].message.content or "").strip()
 
         # Strip markdown code fences if present
         if result_text.startswith("```"):
@@ -475,13 +550,40 @@ def _llm_summarize(
 
         result = json.loads(result_text)
 
+        # ── Parse new multi-dimensional format ──
+        VALID_DIMS = {
+            "architecture", "contract", "algorithm",
+            "implementation", "debug", "meta",
+        }
+        main_summary = result.get("main_summary", result.get("summary", ""))
+        raw_dimensions = result.get("dimensions", [])
+        # Validate and normalize dimensions
+        dimensions = []
+        for d in raw_dimensions:
+            if isinstance(d, dict) and d.get("dim") in VALID_DIMS and d.get("summary"):
+                dimensions.append({
+                    "dim": d["dim"],
+                    "summary": d["summary"].strip()[:30],
+                })
+
+        # Build legacy fields for backward compatibility
+        legacy_summary = main_summary or result.get("summary", "")
+        legacy_key_points = [f"[{d['dim']}] {d['summary']}" for d in dimensions]
+        # If LLM returned old-format key_points, merge them (deduped)
+        old_key_points = result.get("key_points", [])
+        for kp in old_key_points:
+            if kp not in legacy_key_points and kp != legacy_summary:
+                legacy_key_points.append(kp)
+
         return {
             "memory_id": memory_id,
             "title": result.get("title", "对话摘要"),
-            "summary": result.get("summary", ""),
-            "key_points": result.get("key_points", []),
+            "main_summary": main_summary,
+            "dimensions": dimensions,
+            "summary": legacy_summary,
+            "key_points": legacy_key_points,
             "tags": result.get("tags", []),
-            "source_file": f"memories/{memory_id.split(':',1)[1].replace('-', '')}.md",
+            "source_file": f"raw_memories/{memory_id.split(':',1)[1].rsplit('-', 1)[0].replace('-', '')}.md",
             "token_count": (len(user_msg) + len(ai_msg)) // 4,
             "timestamp": datetime.now().isoformat(),
         }
@@ -498,24 +600,40 @@ def build_searchable_text(summary_dict: dict) -> str:
     """Build the searchable text from a summary dict.
 
     This text is what gets embedded and stored in the vector DB.
-    Concatenates title + summary + key_points, skipping key_points
-    that duplicate the summary content.
+    Concatenates title + main_summary + [dim] summary per dimension,
+    with deduplication against the main summary.
+
+    Backward compatible: falls back to legacy 'summary' and 'key_points'
+    when 'main_summary' or 'dimensions' are absent.
     """
     title = summary_dict.get("title", "")
-    summary = summary_dict.get("summary", "")
+    main = summary_dict.get("main_summary", summary_dict.get("summary", ""))
+    dimensions = summary_dict.get("dimensions", [])
     key_points = summary_dict.get("key_points", [])
 
-    parts = [title]
-    if summary:
-        parts.append(summary)
+    parts = [title] if title else []
+    if main:
+        parts.append(main)
 
+    # Add dimension summaries with [dim] tags
+    seen_texts = {main} if main else set()
+    for d in dimensions:
+        if isinstance(d, dict) and d.get("summary"):
+            dim_text = f"[{d['dim']}] {d['summary']}"
+            if dim_text not in seen_texts and d["summary"] not in seen_texts:
+                parts.append(dim_text)
+                seen_texts.add(dim_text)
+
+    # Append legacy key_points not already covered
     for kp in key_points:
         kp_clean = kp.strip()
         if not kp_clean:
             continue
-        # Skip if key_point is just a sub-string of summary (or vice versa)
-        if kp_clean in summary or (len(summary) >= 20 and summary[:50] in kp_clean):
+        if kp_clean in seen_texts:
+            continue
+        if main and (kp_clean in main or (len(main) >= 20 and main[:50] in kp_clean)):
             continue
         parts.append(kp_clean)
+        seen_texts.add(kp_clean)
 
     return " ".join(parts)

@@ -9,7 +9,11 @@ Network Search Tool
 Use DuckDuckGo search engine to search internet information
 """
 
+import concurrent.futures
 from ddgs import DDGS
+
+_SEARCH_TIMEOUT = 15  # seconds
+_MAX_QUERY_LENGTH = 500
 
 
 def execute(query: str, max_results: int = 5) -> str:
@@ -23,27 +27,36 @@ def execute(query: str, max_results: int = 5) -> str:
     Returns:
         Search result list in Markdown format
     """
+    if len(query) > _MAX_QUERY_LENGTH:
+        query = query[:_MAX_QUERY_LENGTH]
+
+    def _do_search():
+        try:
+            with DDGS() as ddgs:
+                return list(ddgs.text(query, max_results=max_results))
+        except Exception as e:
+            return f"Search failed: {str(e)}"
+
     try:
-        # Create DDGS search engine instance
-        with DDGS() as ddgs:
-            # Perform text search
-            results = list(ddgs.text(query, max_results=max_results))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_do_search)
+            results = future.result(timeout=_SEARCH_TIMEOUT)
+    except concurrent.futures.TimeoutError:
+        return f"Search timed out after {_SEARCH_TIMEOUT}s for query '{query[:100]}...'"
 
-        # If no search results exist
-        if not results:
-            return f"No search results found for '{query}'."
+    if isinstance(results, str):
+        return results
 
-        # Format search results
-        output = f"🔍 Search results about '{query}':\n\n"
-        for i, r in enumerate(results, 1):
-            # Get title, link and summary
-            title = r.get("title", "No title")
-            href = r.get("href", "")
-            body = r.get("body", "")[:1000]  # Truncate the first 1000 characters
-            output += f"{i}. **{title}**\n"
-            output += f"   {body}...\n"
-            output += f"   🔍 {href}\n\n"
+    if not results:
+        return f"No search results found for '{query}'."
 
-        return output
-    except Exception as e:
-        return f"Search failed: {str(e)}"
+    output = f"🔍 Search results about '{query}':\n\n"
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "No title")
+        href = r.get("href", "")
+        body = r.get("body", "")[:1000]
+        output += f"{i}. **{title}**\n"
+        output += f"   {body}...\n"
+        output += f"   🔗 {href}\n\n"
+
+    return output

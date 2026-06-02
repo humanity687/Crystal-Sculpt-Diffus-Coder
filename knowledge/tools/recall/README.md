@@ -8,15 +8,28 @@ You should have received a copy of the GNU Affero General Public License along w
 
 ### `recall`
 
-**Purpose**: Fetch original document content by memory_id. This is the second level of the two-level summary memory system. When the model sees a summary reference in context (e.g., `→ recall(memory_id="conv:xxx")`), it calls this tool to retrieve the full text.
+**Purpose**: Fetch original document or crystal content by ID. This is the second level of the two-level summary memory system. Supports two ID types:
+- `memory_id` — resolves to files on disk (conversation backups, tool docs, skill docs)
+- `crystal_id` — resolves from CrystalStore (ExperienceCrystal and other crystal types)
 
 **Input**:
-- `memory_id` (string, required): Unique identifier from a summary shown in context. Formats:
+- `memory_id` (string, optional if crystal_id provided): Unique identifier from a summary shown in context. Formats:
   - `conv:20260115-143022-a1b2c3` — conversation memory
   - `tool:read` — tool documentation
   - `skill:idea-to-code-sculpting` — skill documentation
+- `crystal_id` (string, optional if memory_id provided): Crystal identifier from CrystalStore. Format:
+  - `ExperienceCrystal:proj:module.name:v1.0` — experience crystal
 - `query` (string, optional): Keyword to locate specific paragraphs within the document
-- `lines` (string, optional): Line range like "10-30" or "50" for precise line-level retrieval
+- `lines` (string, optional): Line range like "10-30" or "50" for precise line-level retrieval (file-based IDs only)
+- `dim` (string, optional): Dimension filter. Valid values:
+  - `architecture` — system architecture, module partitioning
+  - `contract` — interface definitions, data formats
+  - `algorithm` — flow logic, computation steps
+  - `implementation` — code details, language features
+  - `debug` — error investigation, root cause analysis
+  - `meta` — planning, progress management
+  - For `memory_id`: extracts matching dimension summary from vector DB
+  - For `crystal_id` (ExperienceCrystal): returns only the matching reference_value
 
 **Output**: The full or filtered document content with a metadata header showing source, character count, token estimate, and line count.
 

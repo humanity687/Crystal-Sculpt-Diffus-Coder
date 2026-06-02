@@ -11,7 +11,7 @@ You should have received a copy of the GNU Affero General Public License along w
 Add a skill as a Markdown file and immediately indexes it into the knowledge base for real-time retrieval. Use this when you've completed a complex task and want to remember the solution for future use.
 
 **Parameters:**
-- `name` (string, required): Skill name, used as filename. Use lowercase with underscores (e.g., "nginx_setup", "python_venv").
+- `name` (string, required): Skill name, used as filename. Use lowercase, can contain hyphens and underscores (no spaces or special characters). Examples: "nginx_setup", "python-venv", "my_custom_skill".
 - `content` (string, required): Skill content in Markdown format. Should include: title, scenario, step-by-step solution, and notes.
 
 **When to use:**

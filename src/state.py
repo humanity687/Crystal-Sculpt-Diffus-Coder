@@ -38,11 +38,40 @@ active_project = None
 # Extracted from idea-to-code-sculpting skill — minimal constraints for current phase
 phase_guidance = None
 
+# Phase rollback notice — set by set_project when phase moves backward
+# Format: {"from": "L4", "to": "L3", "module": "Auth", "previous_record": "..."}
+# Consumed by chat.py (SSE event) and agent._build_context(), then cleared
+phase_rollback_notice = None
+
+# Module switch notice — set by set_project when module changes within same project
+# Format: {"old_module": "Auth", "new_module": "Database", "phase": "L4"}
+# Consumed by agent._build_context() to inject comprehensive module entry context
+module_switch_notice = None
+
+# Phase transition notice — set by set_project on key phase boundaries
+# Format: {"from": "L3", "to": "L4"}
+# Currently used for L3→L4 (all contracts done, entering per-module implementation)
+# Consumed by agent.input() outer loop to trigger proactive compression
+phase_transition_notice = None
+
 
 def load_config():
     with _config_lock:
-        with open("./config.json", "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open("./config.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(
+                "[Config] config.json not found — using empty config",
+                file=sys.stderr,
+            )
+            return {}
+        except json.JSONDecodeError as e:
+            print(
+                f"[Config] config.json is malformed: {e}",
+                file=sys.stderr,
+            )
+            return {}
 
 
 def save_config(config):

@@ -8,6 +8,8 @@
 Knowledge Module - Shared Constants and Model Singleton
 """
 
+import threading
+import numpy as np
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 
@@ -41,11 +43,38 @@ HYBRID_FTS_WEIGHT = 0.3
 
 # Global Model (Singleton)
 _model = None
+_model_lock = threading.Lock()
 MODEL_NAME = "all-MiniLM-L12-v2"
+MODEL_CACHE_DIR = str(Path.home() / ".cache" / "huggingface" / "hub")
 
 
 def get_model():
     global _model
     if _model is None:
-        _model = SentenceTransformer(MODEL_NAME)
+        with _model_lock:
+            if _model is None:  # double-checked locking
+                try:
+                    _model = SentenceTransformer(
+                        MODEL_NAME,
+                        cache_folder=MODEL_CACHE_DIR,
+                        local_files_only=True,
+                    )
+                except Exception:
+                    _model = SentenceTransformer(
+                        MODEL_NAME, cache_folder=MODEL_CACHE_DIR
+                    )
     return _model
+
+
+def encode_single(text: str) -> "np.ndarray":
+    """Thread-safe single-text encoding."""
+    model = get_model()
+    with _model_lock:
+        return model.encode(text)
+
+
+def encode_batch(texts: list[str]) -> "np.ndarray":
+    """Thread-safe batch encoding. Use this instead of model.encode() directly."""
+    model = get_model()
+    with _model_lock:
+        return model.encode(texts)

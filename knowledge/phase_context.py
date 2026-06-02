@@ -25,7 +25,11 @@ GLOBAL_PRINCIPLES = """## 不可违背
 - 每完成一个函数立即验证，不攒到最后
 - Bug 时先 read 相关代码再修改，修复根因不打补丁
 - 注释语言跟随用户对话语言；所有公开函数必须有结构化注释
-- 每层审批通过后立即更新项目进度：调用 set_project 推进 phase 到下一层，调用 crystallize 保存本层产物。若项目所有模块的 L7 均完成，phase 设置为 L8。"""
+- v2.1 契约优先：L2 审批通过后，所有模块先并行完成 L3 签约，全部审批通过后调用 dependency define，再按拓扑序逐个迭代 L4→L7。禁止在全部 L3 签约完成前进入任何模块的 L4。
+- 每层产出完成后立即调用 request_approval(phase="L{phase}", module="<当前模块>", content="<本层输出的完整Markdown>") 记录模块快照并提请用户审批。审批通过后再调用 crystallize 保存本层产物。若不记录快照，模块切换时系统无法注入契约上下文，后续阶段将缺少关键参考。
+- 切换模块时调用 set_project(action="activate", project_id="<id>", phase="<Lx>", module="<新模块>")，系统会自动压缩旧模块历史并注入新模块的 L3 契约及推荐下一模块。当前模块全部完成后推进 phase；若所有模块 L7 均完成，phase 设置为 L8。
+- 每次模块切换（set_project 改变 module 参数）时，系统自动注入该模块及其依赖模块的 L3 契约。每次相位回退时，系统自动注入回退目标层级的上一版本记录供参考。
+- 所有模块 L7 完成并通过 L8 集成测试后，使用 archive_project(action="preview") 生成经验结晶草稿供用户审批，审批通过后 archive_project(action="confirm") 完成归档，最后 set_project(action="deactivate") 退出项目上下文。"""
 
 # ── Phase-specific constraints ──────────────────────────────────────────
 PHASE_PROMPTS = {
@@ -50,16 +54,23 @@ PHASE_PROMPTS = {
 审批通过后立即调用 dependency(command="define", ...)，然后 crystallize(ModMap)。
 若 dependency 报告循环依赖，必须解决后再进 L3。简单项目可跳过 L2。""",
 
-    "L3": """## L3 — 模块规格书
-工作节奏：一个模块的 L3→L7 全部完成后再开下一个模块。
-启动前调用 dependency(command="recommend", ...)，确认模块在 "Ready to Implement" 列表中。
+    "L3": """## L3 — 模块规格书（契约优先 — v2.1）
+
+工作节奏（v2.1 契约优先）：所有模块先并行完成 L3 签约，全部审批通过后再按拓扑序逐个迭代 L4→L7。当前模块 L3 签约完成后，继续下一个未签约模块的 L3；全部签约完成后才能进入任何一个模块的 L4。
+
+启动前确认：确保所有上游依赖模块的 L3 已签约（非实现），可通过 get_active_crystals(crystal_type="ContractCrystal") 检查。
+
 输出：【功能目标】+【输入/输出】(带类型和示例值) +【接口契约】(带类型签名的函数头) +【边界情况】(非法输入策略、依赖不可用策略)
+
 末尾必须标注：
 🔒 锁定：接口签名、输入输出格式、边界处理策略
 🌫 模糊：内部实现算法
+
 末尾必须问：这个模块的接口契约符合你的预期吗？
-审批通过后立即调用 crystallize(ContractCrystal)。
-⚠️ 铁律：本层未审批，不进 L6。""",
+
+完成本层产出后立即调用 request_approval(phase="L3", module="<当前模块>", content="<L3输出的完整Markdown>") 提请审批。审批通过后再调用 crystallize(ContractCrystal) 存储最终契约。
+
+⚠️ 铁律：本模块 L3 未审批，不进入该模块的 L6。全部模块 L3 未完成，不进入任何模块的 L4。""",
 
     "L3.1": """## L3.1 — 契约复议
 仅在 L7 实现中发现 L3 接口因技术现实严格不可行时触发。
@@ -69,17 +80,21 @@ PHASE_PROMPTS = {
 批准后更新 L3 契约，记录变更。""",
 
     "L4": """## L4 — 自然语言算法
+
+v2.1 契约优先：进入 L4 前，确认所有模块的 L3 已签约完成。系统已自动注入本模块及所有直接依赖模块的 L3 契约（见上下文中的 "Dependency Contracts"），算法设计必须严格遵循这些接口契约，不得修改任何已锁定的接口。
+
 判断：有分支/循环/状态变化/复杂数据变换 → 需要独立 L4；单一线性操作 → 合并到 L6。
 输出：【处理步骤】(编号，每步写"做什么→得到什么") + 【边界情况处理】+ 【配套流程图】(有分支时必画 Mermaid)
 末尾必须标注：
 🔒 锁定：算法步骤、分支逻辑、边界处理
 🌫 模糊：变量命名、具体语法、错误处理细节
 末尾必须问：这个处理流程符合预期吗？
-审批通过后立即调用 crystallize(LogicCrystal)。""",
+完成本层产出后立即调用 request_approval(phase="L4", module="<当前模块>", content="<L4输出的完整Markdown>") 提请审批。审批通过后再调用 crystallize(LogicCrystal) 存储最终算法。""",
 
     "L5": """## L5 — 严格伪代码
 默认跳过。仅在算法复杂（递归、动态规划、状态机）或 L4→L6 跨度过大时启用。
-跳过时在 L6 头部注明：# [已跳过 L5：L4 逻辑直观，直接进入代码骨架]""",
+跳过时在 L6 头部注明：# [已跳过 L5：L4 逻辑直观，直接进入代码骨架]
+启用时完成伪代码产出后立即调用 request_approval(phase="L5", module="<当前模块>", content="<L5输出的完整Markdown>") 提请审批。审批通过后再调用 crystallize(SkeletonCrystal) 存储最终伪代码。跳过时无需记录快照。""",
 
     "L6": """## L6 — 代码骨架
 基于 L3 接口 + L4 算法，用 TODO 标记待填充处。
@@ -92,7 +107,7 @@ PHASE_PROMPTS = {
 🔒 锁定：函数结构、命名、注释体系、错误处理骨架
 🌫 模糊：TODO 内的具体实现
 末尾必须问：代码结构和命名符合预期吗？
-审批通过后立即调用 crystallize(SkeletonCrystal)。
+完成本层产出后立即调用 request_approval(phase="L6", module="<当前模块>", content="<L6输出的完整Markdown>") 提请审批。审批通过后再调用 crystallize(SkeletonCrystal) 存储最终骨架。
 ⚠️ 铁律：本层未审批，不进 L7。""",
 
     "L7": """## L7 — 完整实现
@@ -102,7 +117,7 @@ PHASE_PROMPTS = {
 3. 每完成一个函数，立即运行最小测试
 4. 每次 edit 后立即 read 刷新行号
 完成前逐条自检：所有 TODO 已填充、错误处理完整（非空 pass）、命名与 L3 一致（或 L3.1 获批）、最小测试通过、未引入 L3 未定义的新行为（等价优化需注释说明）、已删除调试 print/注释掉的旧代码。
-审批通过后立即调用 crystallize(ImplCrystal)。""",
+完成实现并通过自检后立即调用 request_approval(phase="L7", module="<当前模块>", content="<实现摘要与测试结果>", files=["<实现文件路径>", ...]) 提请审批。审批通过后再调用 crystallize(ImplCrystal) 存储最终实现。""",
 
     "L8": """## L8 — 集成测试 & Bug 回溯
 Bug 定位前先调用 dependency(command="impact", ...) 划定波及范围。

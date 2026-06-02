@@ -15,8 +15,12 @@ Two-level summary memory system:
 """
 
 import json
+import queue
+import sys
 import threading
 from datetime import datetime
+
+import openai as _openai
 
 from .config import KNOWLEDGE_ROOT, RAW_MEMORIES_DIR, MEMORIES_SUMMARY_DIR
 from .vector import add_summary
@@ -24,6 +28,59 @@ from .summarizer import (
     generate_conversation_summary,
     build_searchable_text,
 )
+
+# --- Background LLM summary worker (single thread, serialized queue) ---
+# Avoids httpx.Client multi-thread contention by using a dedicated
+# OpenAI client instance and a single worker thread.
+
+_summary_client = None
+_summary_lock = threading.Lock()
+_pending_summaries = queue.Queue()
+_summary_worker_started = False
+
+
+_current_summary_model: str | None = None
+
+def _ensure_summary_worker(api_key: str, base_url: str, model: str):
+    """Start or update the singleton summary worker thread."""
+    global _summary_client, _summary_worker_started, _current_summary_model
+    with _summary_lock:
+        if not _summary_worker_started:
+            _summary_client = _openai.OpenAI(api_key=api_key, base_url=base_url)
+            _current_summary_model = model
+            t = threading.Thread(
+                target=_summary_worker, daemon=True
+            )
+            t.start()
+            _summary_worker_started = True
+            print(
+                "[SummaryWorker] Background LLM summary worker started",
+                file=sys.stderr,
+            )
+        elif model != _current_summary_model:
+            _current_summary_model = model
+            _summary_client = _openai.OpenAI(api_key=api_key, base_url=base_url)
+            print(
+                f"[SummaryWorker] Model updated to {model}",
+                file=sys.stderr,
+            )
+
+
+def _summary_worker():
+    """Single background thread that processes summary tasks one at a time."""
+    while True:
+        try:
+            task = _pending_summaries.get()
+            if task is None:
+                break
+            user_msg, ai_msg, source = task
+            model = _current_summary_model or ""
+            _generate_and_store(user_msg, ai_msg, source, _summary_client, model)
+        except Exception as e:
+            print(f"[SummaryWorker] Unexpected error: {e}", file=sys.stderr)
+
+
+# --- Public API ---
 
 
 def add_conversation(user_msg: str, ai_msg: str):
@@ -77,15 +134,17 @@ def add_conversation_with_llm(
 ):
     """Store conversation AND generate summary via LLM.
 
-    When background=True (default), the LLM call runs in a daemon thread
-    so it doesn't block the SSE stream.
+    When background=True (default), the summary is enqueued to a single
+    worker thread with its own OpenAI client, avoiding httpx.Client
+    multi-thread contention with the main agent.
 
     Args:
         user_msg: The user's message.
         ai_msg: The full AI response.
-        client: OpenAI-compatible client instance.
+        client: OpenAI-compatible client instance (used to extract credentials
+                for the worker's own client).
         model: Model name for summarization.
-        background: If True, run LLM call in background thread.
+        background: If True, enqueue to background worker thread.
     """
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     backup_filename = f"{timestamp}.md"
@@ -101,15 +160,52 @@ def add_conversation_with_llm(
         print(f"Failed to write memory backup: {e}")
         return
 
-    def _generate_and_store():
+    if background:
+        _ensure_summary_worker(
+            api_key=client.api_key,
+            base_url=str(client.base_url),
+            model=model,
+        )
+        _pending_summaries.put((user_msg, ai_msg, source))
+    else:
+        _generate_and_store(user_msg, ai_msg, source, client, model)
+
+
+def _generate_and_store(
+    user_msg: str,
+    ai_msg: str,
+    source: str,
+    client,
+    model: str,
+):
+    """Generate LLM summary and store in vector DB. Called from worker thread."""
+    try:
         summary = generate_conversation_summary(
             user_msg, ai_msg, client=client, model=model
         )
         if summary is None:
-            return
+            print(
+                "[SummaryWorker] LLM summary returned None, "
+                "falling back to extractive summary",
+                file=sys.stderr,
+            )
+            summary = generate_conversation_summary(user_msg, ai_msg)
+            if summary is None:
+                print(
+                    "[SummaryWorker] Extractive summary also failed, "
+                    "skipping this turn",
+                    file=sys.stderr,
+                )
+                return
+
         searchable = build_searchable_text(summary)
         if not searchable:
+            print(
+                "[SummaryWorker] build_searchable_text returned empty",
+                file=sys.stderr,
+            )
             return
+
         summary_json = json.dumps(summary, ensure_ascii=False)
         add_summary(
             memory_id=summary["memory_id"],
@@ -118,9 +214,9 @@ def add_conversation_with_llm(
             source=source,
             summary_json=summary_json,
         )
-
-    if background:
-        t = threading.Thread(target=_generate_and_store, daemon=True)
-        t.start()
-    else:
-        _generate_and_store()
+        print(
+            f"[SummaryWorker] Summary stored: {summary.get('memory_id', '?')}",
+            file=sys.stderr,
+        )
+    except Exception as e:
+        print(f"[SummaryWorker] Error generating summary: {e}", file=sys.stderr)

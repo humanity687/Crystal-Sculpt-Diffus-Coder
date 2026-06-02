@@ -71,6 +71,7 @@ def init_agents():
     temperature = config.get("temperature", 0.8)
     thinking = config.get("thinking", False)
     knowledge_k = config.get("knowledge_k", 5)
+    crystal_k = config.get("crystal_k", 3)
     settings = config.get("settings", "You are a helpful AI assistant.")
 
     # Initialize shared CrystalStore
@@ -105,6 +106,7 @@ def init_agents():
         temperature=temperature,
         thinking=thinking,
         knowledge_k=knowledge_k,
+        crystal_k=crystal_k,
         crystal_store=state.crystal_store,
         crystal_observer=crystal_observer,
     )
@@ -117,6 +119,7 @@ def init_agents():
         temperature=temperature,
         thinking=thinking,
         knowledge_k=knowledge_k,
+        crystal_k=crystal_k,
         crystal_store=state.crystal_store,
     )
 

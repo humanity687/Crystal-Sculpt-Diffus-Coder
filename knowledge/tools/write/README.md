@@ -7,45 +7,71 @@ You should have received a copy of the GNU Affero General Public License along w
 -->
 
 ### `write` — Propose file content changes (proposal-review-overwrite mode)
-- **Purpose**: Used when the AI wants to create a new file, write content to an existing file, or modify a file. The write tool **no longer performs any file operations**. Instead, it returns the AI's suggested complete file content as a string. The frontend displays this in a code review panel where the user can inspect diffs, edit the code, and approve the changes.
+
+- **Purpose**: Compute and preview file modifications before applying them. The write tool
+  **does NOT write to disk** — it returns the proposed new file content. The frontend
+  displays a code review panel where the user can inspect diffs, edit the code, and
+  approve the changes. On approval the frontend writes the file via `/api/write_file`.
+
+
+
 - **Input**:
     ```json
     {
-        "path": "Full path of the file",
-        "content": "Complete file content after modifications",
-        "mode": "overwrite" or "append" or "edit",
-        "start_line": 0,
-        "end_line": 0
+        "path": "/absolute/path/to/file.py",
+        "mode": "overwrite",
+        "content": "...",
+        "new_content": "...",
+        "start_line": 54,
+        "end_line": 57
     }
     ```
-    - `path`: **string**, required, full path of the target file.
-    - `content`: **string**, required, the AI's suggested complete file content after all modifications. The frontend will diff this against the current file on disk.
-    - `mode`: **string**, optional, default is "overwrite". Available values:
-        - `"overwrite"`: Replace entire file.
-        - `"append"`: Insert content **after** the line specified by `start_line` (if `start_line > 0`), otherwise append to the end of the file. `end_line` is ignored.
-        - `"edit"`: Replace lines from `start_line` to `end_line` (both inclusive, 1-based). Use with `read` tool's line numbers for precise editing.
-    - `start_line`: **integer**, required in edit and append mode (for append only when inserting after a specific line). Start line number (1-based, inclusive). If `start_line <= 0` in append mode, content is appended to the end.
-    - `end_line`: **integer**, required in edit mode. End line number (1-based, inclusive).
-- **Output**: The AI's suggested complete file content as a plain string (not a dictionary).
+    - `path`: **string, required**. Absolute path to the target file.
+    - `mode`: **string, optional, default `"overwrite"`**. One of:
+        - `"overwrite"` — Create a new file or fully replace an existing one.
+        - `"edit"` — Delete a line range then insert new content at that position.
+        - `"replace"` — Find exact text and replace it (with safety guard against duplicates).
+        - `"insert"` — Insert content after a specific line without deleting anything.
+    - `content`: **string, required for `overwrite`**. The complete new file content.
+    - `start_line` / `end_line`: **int, required for `edit`**. The line range to delete
+      (1-based, inclusive). The new content is inserted at `start_line`.
+    - `new_content`: **string, required for `edit` and `insert`**. The text to insert.
+    - `old_string` / `new_string`: **string, required for `replace`**. The exact text to
+      find and its replacement. Case-sensitive, whitespace-sensitive.
+    - `expected_replacements`: **int, optional, default 1**. Safety guard for `replace` mode.
+      If the number of `old_string` occurrences in the file doesn't match this value,
+      the operation is rejected. Increase this value when intentionally replacing multiple
+      occurrences.
+    - `after_line`: **int, required for `insert`**. Line number to insert after
+      (0 = insert at the very beginning of the file).
+
+- **Output**: A string with two parts separated by `---FILE_CONTENT---`:
+    - **First part** (stored in agent message history):
+        - `edit` / `replace` / `insert`: A unified diff showing only the changed region (±2 context lines).
+        - `overwrite`: An AST structure summary of the new file content.
+    - **Second part** (sent to frontend for review): The complete proposed file content.
+
+- **Mode selection guide**:
+    | Scenario | Mode | Notes |
+    |----------|------|-------|
+    | Create new file | `overwrite` | Auto-creates parent dirs on approval |
+    | Completely rewrite a file | `overwrite` | Returns AST structure for agent reference |
+    | Replace a function body | `edit` | Delete old lines, insert new implementation |
+    | Rename a variable everywhere | `replace` | Use `expected_replacements=N` if replacing N occurrences |
+    | Fix a typo in one location | `replace` | Default `expected_replacements=1` ensures uniqueness |
+    | Add a new import | `insert` | Insert after existing imports with `after_line` |
+    | Add shebang or header | `insert` | Use `after_line=0` to prepend |
+    | Add a new function at end | `insert` | Use `after_line=<last_line>` |
+
 - **Workflow**:
-    1. The AI calls the `write` tool with the proposed file content.
-    2. The backend returns the content string to the frontend without touching the disk.
-    3. The frontend opens a code review panel showing the diff between the original file and the AI's proposal.
-    4. The user can switch to edit mode, modify the code, then approve the changes.
-    5. On approval, the frontend writes the file and sends the final content back to the AI so it stays in sync.
-- **Notes**:
-    - This tool does NOT execute any file operations. All disk writes are performed by the frontend after user approval.
-    - **Append mode with `start_line`**:  
-      Example: A file contains lines `1: a` `2: b`. Calling `write` with `mode="append"`, `start_line=1`, `content="X"` results in:  
-      ```
-      a
-      X
-      b
-      ```
-      If `start_line >= total_lines`, content is inserted after the last line (equivalent to appending).
-    - **Edit mode**: Always use `read` first to get the current line numbers, then specify the exact range to replace.
-    - **Critical Rule for `edit` mode — Line Number Adherence (READ ONLY, NEVER PREDICT)**:
-        - **ALL `start_line` and `end_line` values MUST come exclusively from the most recent `read` operation.** You are FORBIDDEN from predicting, calculating, or inferring line numbers based on the content of the edit itself.
-        - **Original file only:** When deleting or replacing lines, use the line numbers of the ORIGINAL file BEFORE your edit. Example: If `read` shows lines 50-60 and you are replacing lines 54-57 with a 6-line block, you MUST use `start_line=54, end_line=57`. Using `54-59` (post-edit calculation) is a serious violation.
-        - **No "drift" correction:** Do NOT try to adjust line numbers to compensate for how the edit will shift subsequent lines. That shift is handled internally; your job is to provide the exact current coordinates.
-        - **Check your work:** Before calling `write` with `edit` mode, explicitly state in your plan: "I am replacing lines X to Y as they appear in the most recent `read` operation."
+    1. AI calls `read` first to get the current file state and line numbers.
+    2. AI calls `write` with the proposed changes — the tool computes the result (no disk write).
+    3. The backend sends the full proposed content to the frontend for review.
+    4. The user inspects the diff, optionally edits the code, then approves or rejects.
+    5. On approval, the frontend writes the file. The agent stores only the diff/err in history.
+
+- **Critical rules**:
+    - **Always `read` before `write`** — all line numbers and `old_string` values must come from the most recent `read` result. Never predict or infer them.
+    - **For `edit` mode**: use the ORIGINAL file's line numbers (before your edit). The tool handles line shifting internally.
+    - **For `replace` mode**: if `expected_replacements` doesn't match the actual occurrence count, the operation is rejected. Either adjust the count or make `old_string` more specific.
+    - **This tool does NOT write to disk** — all writes happen on the frontend after user approval.

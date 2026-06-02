@@ -7,19 +7,44 @@ You should have received a copy of the GNU Affero General Public License along w
 -->
 
 ### `read` - Read File Content or Project Structure
-- **Purpose**: Call this tool when the user requests to view the content of a file, analyze data within a file, obtain information from a file to complete subsequent tasks, or understand the structure of a project.
+
+- **Purpose**: Read file content (with three modes), scan project structure, or analyze media files.
 - **Input**:
 ```json
 {
-    "path": "Full path of the file or directory"
+    "path": "/absolute/path/to/file.py",
+    "mode": "all",
+    "offset": 1,
+    "limit": 2000,
+    "show_structure": false
 }
 ```
-    - `path`: **string**, required. The path can be an absolute path, or a relative path based on the current working directory. Pass a directory path to scan the project structure.
+    - `path`: **string, required**. Absolute path to the file or directory.
+    - `mode`: **string, optional, default `"all"`**. Reading mode:
+        - `"all"` — Read whole file or a segment from `offset` with `limit` lines.
+        - `"lines"` — Read a precise line range (`start_line` to `end_line`, inclusive).
+        - `"find"` — Search file content for a string or regex, return match blocks with context.
+    - `offset`: **int, optional, default 1**. Start line number (1-based). Only for `all` mode.
+    - `limit`: **int, optional, default 2000**. Max lines to return. Output includes `[PARTIAL view]` marker when truncated. Only for `all` mode.
+    - `show_structure`: **bool, optional, default false**. When true, prepend tree-sitter AST structure summary (classes, functions, imports with line ranges). Only for `all` and `lines` modes.
+    - `start_line`: **int, required for `lines` mode**. First line to read (1-based, inclusive).
+    - `end_line`: **int, required for `lines` mode**. Last line to read (inclusive). Clamped to file length if beyond EOF.
+    - `query`: **string, required for `find` mode**. Search keyword or regex pattern.
+    - `is_regex`: **bool, optional, default false**. Treat `query` as regex when true.
+    - `context_lines`: **int, optional, default 2**. Lines of context above and below each match. Only for `find` mode.
+    - `max_matches`: **int, optional, default 20**. Max match blocks to return. Surplus matches noted in header. Only for `find` mode.
 - **Output**:
-    - **Code files** (py, js, ts, rs, go, java, c, cpp, cs, etc.): Returns a `structure` section (AST skeleton with node types, names, and line ranges) followed by a `content` section (full file with line numbers). Use the structure to navigate, and the line numbers to locate exact positions for the `write` tool's edit mode.
-    - **Non-code text files**: Returns file content with line numbers.
-    - **Document files** (PDF, Word, Excel, PowerPoint, CSV): Returns converted text content.
-    - **Image/Video files**: Returns an AI-generated description.
-    - **Directory**: Returns a structure map of all code files in the project, showing classes, functions, imports, and their line ranges.
-    - An error message will be returned if the path does not exist or cannot be read.
-- **Notes**: This tool is read-only and will not modify any files. Ensure the path is correct; confirm the file location via other methods if necessary.
+    - **Code / text files**: Content with line numbers (`{num:6d}| {content}`). May include `[PARTIAL view]` marker when truncated.
+    - **`find` mode**: Structured match blocks with `>` marking matched lines and surrounding context.
+    - **`show_structure=true`**: Prepends an AST skeleton section (node types, names, line ranges) before the content.
+    - **Document files** (PDF, Word, Excel, PowerPoint, CSV): Converted Markdown text via MarkItDown.
+    - **Image/Video files**: AI-generated description via ETT (multimodal).
+    - **Directory**: Structure map of all code files with their AST skeletons.
+    - Error messages for missing files, permission errors, or invalid parameters.
+- **Recommended usage**:
+    - **First exploration**: `read(file_path="...", limit=200)` — quickly see file header.
+    - **Precise code block**: `read(file_path="...", mode="lines", start_line=100, end_line=150)` — read before editing.
+    - **Find function/pattern**: `read(file_path="...", mode="find", query="def authenticate")` — safe grep alternative with context.
+    - **Edit verification**: re-read the edited range with `lines` mode after applying changes.
+    - **AST overview**: add `show_structure=true` when you need to understand file organization.
+- **Notes**: This tool is read-only and will not modify any files. All output lines are numbered for use with the `write` tool's edit mode. Single lines over 2000 characters are truncated with a marker.

@@ -14,9 +14,23 @@ chat:
   stopped: "（已停止生成）"
   error: "错误：{message}"
   network_error: "网络错误：{message}"
+  phase_rollback_title: "相位回退"
+  phase_rollback_desc: "工作流已从 {from} 回退到 {to}，之前的产出需要重新审视。以下是被回退模块的上一次审批通过的契约："
+  rollback_contract: "上次审批通过的契约"
+  module_label: "模块"
+  system_injection: "系统消息注入"
+  compression_title: "上下文压缩"
+  compression_cut: "已裁剪 {count} 条"
+  compression_remaining: "剩余 {count} 条"
+  compression_desc: "由于上下文长度超限，系统自动压缩了 {cut} 条较早的消息，当前保留 {remaining} 条。"
+  compression_hint: "核心上下文（相位指引、结晶契约、知识摘要）已保留。如需完整历史，请使用 TUI 调试模式。"
+  project_inactive: "项目模式未激活"
 
 knowledge:
   title: "📚 相关知识"
+
+crystal:
+  title: "结晶匹配"
 
 tool:
   using: "调用{name}中..."
@@ -31,6 +45,7 @@ tool:
   rejected: "❌ 工具执行已拒绝"
   confirm_write_template: "路径：{path}\n模式：{mode}\n起始行：{startLine}\n结束行：{endLine}\n\n内容：\n```\n{content}\n```"
   confirm_command_template: "```\n{command}\n```"
+  command_warning: "⚠️ 高危操作：此命令可能修改文件或系统状态，请仔细审查后批准。"
 
 config:
   header: "⚙️ 配置"
@@ -42,6 +57,7 @@ config:
   thinking: "深度思考"
   max_iterations: "最大迭代次数"
   knowledge_k: "知识检索数量"
+  crystal_k: "结晶匹配数量"
   settings: "系统设置"
   ett_header: "📸 ETT（多模态理解）工具配置"
   ett_api_key: "API密钥 (ett)"

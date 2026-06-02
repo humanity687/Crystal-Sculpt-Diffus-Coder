@@ -41,13 +41,119 @@ def chat():
                 k = getattr(state.chat_agent, "knowledge_k", 5)
                 relevant = search(user_message, k=k)
                 for item in relevant:
-                    # item already has 'type' (e.g. tool_summary) — rename to 'doc_type'
-                    # to avoid overwriting the SSE event type 'knowledge'
-                    doc_type = item.pop("type", "generic")
-                    item["doc_type"] = doc_type
-                    yield f"data: {json.dumps({'type': 'knowledge', **item})}\n\n"
+                    # Copy to avoid mutating shared results and to prevent
+                    # item's own "type" key from overwriting SSE event type
+                    knowledge_item = dict(item)
+                    doc_type = knowledge_item.pop("type", "generic")
+                    knowledge_item["doc_type"] = doc_type
+                    yield f"data: {json.dumps({'type': 'knowledge', **knowledge_item})}\n\n"
             except Exception as e:
                 print(f"Knowledge retrieval failed: {e}")
+
+            # Crystal search — display matching crystals in frontend
+            try:
+                agent = state.chat_agent
+                if agent and agent.crystal_store and state.active_project:
+                    crystal_k = getattr(agent, "crystal_k", 3)
+                    phase = state.active_project.get("phase", "")
+                    module = state.active_project.get("module", "")
+                    crystal_items = []
+
+                    def _safe_list(val):
+                        if isinstance(val, list):
+                            return ", ".join(val)
+                        if isinstance(val, str):
+                            return val
+                        return str(val) if val else ""
+
+                    def _fmt_contract(c):
+                        content = c.get("content", {}) if isinstance(c.get("content"), dict) else {}
+                        return {
+                            "title": f"{c.get('module', '')}/{c.get('name', '')}",
+                            "text": f"**ContractCrystal v{c.get('vitality', 0)}**\n\n"
+                                    f"项目: {c.get('project_id', '')}\n\n"
+                                    f"签名: {content.get('signature', 'N/A')}\n\n"
+                                    f"前置条件: {_safe_list(content.get('preconditions'))}\n\n"
+                                    f"后置条件: {_safe_list(content.get('postconditions'))}",
+                            "icon": "🔮",
+                            "doc_type": "crystal_contract",
+                            "memory_id": f"crystal:{c.get('crystal_id', '')}",
+                            "score": c.get("_score", 0),
+                        }
+
+                    def _fmt_trace(t):
+                        content = t.get("content", {}) if isinstance(t.get("content"), dict) else {}
+                        return {
+                            "title": t.get("name", ""),
+                            "text": f"**TraceCrystal**\n\n"
+                                    f"症状: {content.get('symptom', 'N/A')}\n\n"
+                                    f"根因: {content.get('root_cause', 'N/A')}\n\n"
+                                    f"修复: {content.get('fix', 'N/A')}",
+                            "icon": "🔍",
+                            "doc_type": "crystal_trace",
+                            "memory_id": f"crystal:{t.get('crystal_id', '')}",
+                            "score": t.get("_score", 0),
+                        }
+
+                    # L3/L4/L5: contracts + traces; L6/L7/L8: traces only
+                    if phase in ("L3", "L4", "L5"):
+                        contracts = agent.crystal_store.find_similar_contracts(
+                            user_message, top_k=crystal_k
+                        )
+                        traces = agent.crystal_store.find_related_traces(
+                            module or user_message, top_k=max(1, crystal_k - 1)
+                        )
+                        for c in contracts:
+                            crystal_items.append(_fmt_contract(c))
+                        for t in traces:
+                            crystal_items.append(_fmt_trace(t))
+                    elif phase in ("L6", "L7", "L8"):
+                        traces = agent.crystal_store.find_related_traces(
+                            module or user_message, top_k=crystal_k
+                        )
+                        for t in traces:
+                            crystal_items.append(_fmt_trace(t))
+
+                    if crystal_items:
+                        print(
+                            f"[CrystalSSE] Sending {len(crystal_items)} crystal items "
+                            f"for phase={phase}", file=sys.stderr
+                        )
+                    for item in crystal_items:
+                        yield f"data: {json.dumps({'type': 'crystal', **item})}\n\n"
+            except Exception as e:
+                import traceback
+                print(f"Crystal search failed: {e}", file=sys.stderr)
+                traceback.print_exc()
+
+            # Phase rollback notification — push SSE event to frontend
+            try:
+                if state.phase_rollback_notice:
+                    notice = state.phase_rollback_notice
+                    # Also fetch the last contract for the module to show in the notice
+                    contract_info = None
+                    if notice.get("module") and state.chat_agent and state.chat_agent.crystal_store:
+                        contracts = state.chat_agent.crystal_store.get_active_crystals(
+                            project_id=state.active_project.get("project_id", ""),
+                            crystal_type="ContractCrystal",
+                            module=notice["module"],
+                        )
+                        if contracts:
+                            c = contracts[0]
+                            content = c.get("content", {}) if isinstance(c.get("content"), dict) else {}
+                            contract_info = {
+                                "name": c.get("name", ""),
+                                "signature": content.get("signature", ""),
+                                "preconditions": content.get("preconditions", []),
+                                "postconditions": content.get("postconditions", []),
+                            }
+                    yield f"data: {json.dumps({'type': 'phase_rollback', 'from': notice['from'], 'to': notice['to'], 'module': notice.get('module', ''), 'contract': contract_info})}\n\n"
+                    print(
+                        f"[PhaseRollback] SSE event sent: {notice['from']} -> {notice['to']} "
+                        f"(module={notice.get('module', '')})", file=sys.stderr
+                    )
+            except Exception as e:
+                print(f"Phase rollback SSE failed: {e}", file=sys.stderr)
 
             agent_gen = state.chat_agent.input(user_message)
             gen_exhausted = False
@@ -72,6 +178,26 @@ def chat():
                 elif isinstance(item, dict) and item.get("type") == "tool_result":
                     yield f"data: {json.dumps(item)}\n\n"
 
+                # System injection notice (set_project / dependency tool context)
+                elif isinstance(item, dict) and item.get("type") == "system_injection":
+                    yield f"data: {json.dumps(item)}\n\n"
+
+                # Context compression notice
+                elif isinstance(item, dict) and item.get("type") == "compression":
+                    yield f"data: {json.dumps(item)}\n\n"
+
+                # Token usage report (input/output/total from API)
+                elif isinstance(item, dict) and item.get("type") == "token_usage":
+                    yield f"data: {json.dumps(item)}\n\n"
+
+                # Project state change (set_project activate/deactivate)
+                elif isinstance(item, dict) and item.get("type") == "project_state":
+                    yield f"data: {json.dumps(item)}\n\n"
+
+                # Outer-loop restart — signal frontend to create a new bubble
+                elif isinstance(item, dict) and item.get("type") == "context_restart":
+                    yield f"data: {json.dumps(item)}\n\n"
+
                 # Confirmation request – wait for user approval instead of auto‑approving
                 elif (
                     isinstance(item, dict)
@@ -81,10 +207,8 @@ def chat():
                     # Ensure the item carries the confirm_id so the frontend can use it
                     item["confirm_id"] = confirm_id
 
-                    # Send the confirmation request to the frontend
-                    yield f"data: {json.dumps(item)}\n\n"
-
-                    # Create a queue to wait for the user's decision
+                    # Register queue BEFORE yielding so frontend can immediately
+                    # POST to /api/confirm_tool without racing
                     confirm_queue = queue.Queue()
 
                     with state.pending_lock:
@@ -93,11 +217,18 @@ def chat():
                             "queue": confirm_queue,
                         }
 
-                    # Block until the user approves or rejects via /api/confirm_tool
-                    try:
-                        approved = confirm_queue.get(timeout=300)
-                    except queue.Empty:
-                        approved = False  # Treat timeout as rejection
+                    # Send the confirmation request to the frontend
+                    yield f"data: {json.dumps(item)}\n\n"
+
+                    # Block until the user approves or rejects via /api/confirm_tool.
+                    # Short timeout + keepalive yield allows GeneratorExit to be
+                    # delivered when the client disconnects.
+                    approved = None
+                    while approved is None:
+                        try:
+                            approved = confirm_queue.get(timeout=1)
+                        except queue.Empty:
+                            yield f": keepalive\n\n"
 
                     with state.pending_lock:
                         state.pending_confirmations.pop(confirm_id, None)
@@ -125,10 +256,8 @@ def chat():
                     confirm_id = item.get("confirm_id", str(uuid.uuid4()))
                     item["confirm_id"] = confirm_id
 
-                    # Send the write proposal to the frontend
-                    yield f"data: {json.dumps(item)}\n\n"
-
-                    # Create a queue to wait for the user's final content
+                    # Register queue BEFORE yielding so frontend can immediately
+                    # POST to /api/confirm_tool without racing
                     confirm_queue = queue.Queue()
 
                     with state.pending_lock:
@@ -137,11 +266,16 @@ def chat():
                             "queue": confirm_queue,
                         }
 
+                    # Send the write proposal to the frontend
+                    yield f"data: {json.dumps(item)}\n\n"
+
                     # Block until the user returns the final content via /api/confirm_tool
-                    try:
-                        final_content = confirm_queue.get(timeout=300)
-                    except queue.Empty:
-                        final_content = item.get("content", "")  # Fallback to AI content
+                    final_content = None
+                    while final_content is None:
+                        try:
+                            final_content = confirm_queue.get(timeout=1)
+                        except queue.Empty:
+                            yield f": keepalive\n\n"
 
                     with state.pending_lock:
                         state.pending_confirmations.pop(confirm_id, None)
@@ -149,6 +283,51 @@ def chat():
                     # Feed the user's final content back into the generator
                     try:
                         next_item = agent_gen.send(final_content)
+                        if isinstance(next_item, dict):
+                            if next_item.get("type") == "tool_result":
+                                yield f"data: {json.dumps(next_item)}\n\n"
+                            else:
+                                yield f"data: {json.dumps(next_item)}\n\n"
+                        elif isinstance(next_item, str):
+                            full_response += next_item
+                            yield f"data: {json.dumps({'type': 'content', 'text': next_item})}\n\n"
+                    except StopIteration:
+                        gen_exhausted = True
+
+                # Approval request — show Lx content in Markdown, wait for approve/reject
+                elif (
+                    isinstance(item, dict)
+                    and item.get("type") == "approval_required"
+                ):
+                    confirm_id = item.get("confirm_id", str(uuid.uuid4()))
+                    item["confirm_id"] = confirm_id
+
+                    # Register queue BEFORE yielding so frontend can immediately
+                    # POST to /api/confirm_tool without racing
+                    confirm_queue = queue.Queue()
+                    with state.pending_lock:
+                        state.pending_confirmations[confirm_id] = {
+                            "generator": agent_gen,
+                            "queue": confirm_queue,
+                        }
+
+                    # Send to frontend
+                    yield f"data: {json.dumps(item)}\n\n"
+
+                    # Block until the user approves or rejects via /api/confirm_tool
+                    approved = None
+                    while approved is None:
+                        try:
+                            approved = confirm_queue.get(timeout=1)
+                        except queue.Empty:
+                            yield f": keepalive\n\n"
+
+                    with state.pending_lock:
+                        state.pending_confirmations.pop(confirm_id, None)
+
+                    # Feed the user's decision back into the generator
+                    try:
+                        next_item = agent_gen.send(approved)
                         if isinstance(next_item, dict):
                             if next_item.get("type") == "tool_result":
                                 yield f"data: {json.dumps(next_item)}\n\n"
@@ -177,13 +356,28 @@ def chat():
             if full_response:
                 agent = state.chat_agent
                 if agent and hasattr(agent, "client") and agent.client:
-                    add_conversation_with_llm(
-                        user_message,
-                        full_response,
-                        client=agent.client,
-                        model=agent.model,
-                        background=True,
-                    )
+                    # Prefer lightweight model for summarization (cheaper/faster)
+                    try:
+                        from knowledge.lightweight import is_available, get_model as _lw_model
+                        from knowledge.lightweight import _get_client as _lw_client
+                        if is_available():
+                            add_conversation_with_llm(
+                                user_message,
+                                full_response,
+                                client=_lw_client(),
+                                model=_lw_model(),
+                                background=True,
+                            )
+                        else:
+                            raise RuntimeError("lightweight unavailable")
+                    except Exception:
+                        add_conversation_with_llm(
+                            user_message,
+                            full_response,
+                            client=agent.client,
+                            model=agent.model,
+                            background=True,
+                        )
                 else:
                     add_conversation(user_message, full_response)
 
@@ -195,19 +389,21 @@ def chat():
             with state.pending_lock:
                 for confirm_id, info in list(state.pending_confirmations.items()):
                     if info.get("generator") is agent_gen:
-                        # Wake up the generator to let it finish gracefully
                         try:
-                            info["queue"].put(
-                                False
-                            )  # Wake up from waiting so that the generator can finish
+                            info["queue"].put(False)
                         except Exception:
                             pass
                         del state.pending_confirmations[confirm_id]
+            raise  # Re-raise to properly terminate the generator
         except Exception as e:
             import traceback
 
             traceback.print_exc()
             yield f"data: {json.dumps({'type': 'error', 'text': f'Agent crashed: {str(e)}'})}\n\n"
+        finally:
+            # Always clear phase rollback notice to prevent stale state leaking
+            # into the next request (handles both normal completion and disconnect)
+            state.phase_rollback_notice = None
 
     return Response(
         stream_with_context(generate()),
@@ -227,6 +423,7 @@ def confirm_tool():
     confirm_id = data.get("confirm_id")
     approved = data.get("approved", False)
     final_content = data.get("final_content", None)
+    rejection_reason = data.get("rejection_reason", None)
 
     if not confirm_id:
         return jsonify({"error": "Missing confirm_id"}), 400
@@ -237,6 +434,9 @@ def confirm_tool():
             if final_content is not None:
                 # write tool: send the user's final content back to the generator
                 info["queue"].put(final_content)
+            elif rejection_reason is not None:
+                # approval tool with rejection feedback
+                info["queue"].put({"approved": approved, "reason": rejection_reason})
             else:
                 # command tool: send True/False
                 info["queue"].put(approved)
@@ -277,6 +477,11 @@ def read_file():
         return jsonify({"error": str(e)}), 500
 
 
+_SENSITIVE_FILENAMES = {
+    "config.json", "config.json.tmp", "private.key", ".env",
+    "crystals.db", "messages.json",
+}
+
 @chat_bp.route("/api/write_file", methods=["POST"])
 @login_required
 def write_file():
@@ -299,6 +504,8 @@ def write_file():
             p.relative_to(project_root)
         except ValueError:
             return jsonify({"error": "Access denied: path outside project directory"}), 403
+        if p.name in _SENSITIVE_FILENAMES:
+            return jsonify({"error": f"Access denied: writing to {p.name} is not permitted via the web API"}), 403
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, "w", encoding="utf-8") as f:
             f.write(content)

@@ -7,13 +7,16 @@
 """
 Dependency Graph Tool — Agent-driven dependency graph management.
 
-Four sub-commands:
+Five sub-commands:
 - define: Agent directly declares modules + dependencies, builds graph,
   stores DependencyGraphCrystal. Primary entry point — call after L2 approval.
 - analyze: Build dependency graph from ModMap crystals. Fallback when
   ModMap crystals already exist and agent wants to reconcile.
-- recommend: Given completed modules, list ready-to-implement modules.
+- recommend: List modules ready to implement. Completed list is optional —
+  when omitted, auto-derived from DependencyGraphCrystal.module_status.
   Call before starting L3 for a module.
+- mark_done: Mark a module as implemented after L7 approval. Updates
+  DependencyGraphCrystal.module_status and returns newly ready modules.
 - impact: Given a changed module, list all downstream affected modules.
   Call at L3.1 contract renegotiation or L8 bug backtracking.
 """
@@ -35,14 +38,16 @@ def execute(command: str, project_id: str, **kwargs) -> str:
     Dependency graph tool — sub-command dispatch.
 
     Args:
-        command: One of "define", "analyze", "recommend", "impact"
-        project_id: The project identifier (matches ModMap crystal's project_id)
+        command: One of "define", "analyze", "recommend", "mark_done", "impact"
+        project_id: The project identifier.
         For define: modules (list[str]), dependencies (dict[str, list[str]])
-        For recommend: completed (list[str]) — modules with completed dependencies
-        For impact: module (str) — the module whose change impact to assess
+        For recommend: completed (list[str], optional) — auto-derived from
+            module_status when omitted.
+        For mark_done: module (str) — the module that just finished L7.
+        For impact: module (str) — the module whose change impact to assess.
 
     Returns:
-        Formatted Markdown report string (to be injected into agent context).
+        Formatted Markdown report string.
     """
     from src import state
 
@@ -87,15 +92,31 @@ def execute(command: str, project_id: str, **kwargs) -> str:
                 f"No DependencyGraphCrystal found for project '{project_id}'. "
                 f"Run 'define' or 'analyze' first."
             )
+        if len(depgraphs) > 1:
+            print(
+                f"[Dependency] Warning: {len(depgraphs)} DependencyGraphCrystals found, "
+                f"using the first one",
+                file=sys.stderr,
+            )
         content = depgraphs[0].get("content", {})
         graph = content.get("graph", {})
         if not graph:
             return f"Error: DependencyGraphCrystal for '{project_id}' has no graph data."
         cycles = content.get("cycles", [])
-        completed = set(kwargs.get("completed", []))
-        if isinstance(completed, list):
-            completed = set(completed)
+        module_status = content.get("module_status", {})
+        # Auto-derive completed from module_status when not explicitly provided
+        completed_raw = kwargs.get("completed")
+        if completed_raw is not None:
+            completed = set(completed_raw) if isinstance(completed_raw, list) else set()
+        else:
+            completed = {m for m, s in module_status.items() if s == "implemented"}
         return _do_recommend(graph, completed, cycles)
+
+    elif command == "mark_done":
+        module = kwargs.get("module", "")
+        if not module:
+            return "Error: 'module' parameter is required for mark_done."
+        return _do_mark_done(project_id, module)
 
     elif command == "impact":
         depgraphs = state.crystal_store.get_active_crystals(
@@ -119,7 +140,7 @@ def execute(command: str, project_id: str, **kwargs) -> str:
     else:
         return (
             f"Error: Unknown command '{command}'. "
-            f"Valid commands: define, analyze, recommend, impact."
+            f"Valid commands: define, analyze, recommend, mark_done, impact."
         )
 
 
@@ -152,11 +173,12 @@ def _do_define(
     # Compute module status from existing ContractCrystal/ImplCrystal
     module_status: dict[str, str] = {}
     for module in graph:
+        module_normalized = module.strip()
         contracted = state.crystal_store.get_active_crystals(
-            project_id=project_id, crystal_type="ContractCrystal", module=module
+            project_id=project_id, crystal_type="ContractCrystal", module=module_normalized
         )
         implemented = state.crystal_store.get_active_crystals(
-            project_id=project_id, crystal_type="ImplCrystal", module=module
+            project_id=project_id, crystal_type="ImplCrystal", module=module_normalized
         )
         if implemented:
             module_status[module] = "implemented"
@@ -364,6 +386,110 @@ def _do_recommend(
             lines.append(f"- {cs}")
         lines.append("")
         lines.append("Resolve these cycles before proceeding. Consider L3.1 contract renegotiation.")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _do_mark_done(project_id: str, module: str) -> str:
+    """Mark a module as implemented and return newly ready modules."""
+    from src import state
+
+    depgraphs = state.crystal_store.get_active_crystals(
+        project_id=project_id, crystal_type="DependencyGraphCrystal"
+    )
+    if not depgraphs:
+        return (
+            f"No DependencyGraphCrystal found for project '{project_id}'. "
+            f"Run 'define' or 'analyze' first."
+        )
+
+    content = depgraphs[0].get("content", {})
+    graph = content.get("graph", {})
+    if not graph:
+        return f"Error: DependencyGraphCrystal for '{project_id}' has no graph data."
+    if module not in graph:
+        return (
+            f"Error: Module '{module}' is not part of the dependency graph. "
+            f"Known modules: {', '.join(sorted(graph.keys()))}"
+        )
+
+    cycles = content.get("cycles", [])
+    module_status = content.get("module_status", {})
+
+    # Mark the module as implemented
+    old_status = module_status.get(module, "pending")
+    module_status[module] = "implemented"
+
+    # Derive completed set from updated module_status
+    completed = {m for m, s in module_status.items() if s == "implemented"}
+    ready = recommend_next(graph, completed)
+
+    # Filter out modules in cycles
+    if cycles:
+        cycle_nodes: set[str] = set()
+        for cycle in cycles:
+            cycle_nodes.update(cycle)
+        ready = [r for r in ready if r not in cycle_nodes]
+
+    # Update and re-store the crystal
+    content["module_status"] = module_status
+    try:
+        for old in depgraphs:
+            state.crystal_store.deprecate_crystal(old["id"])
+        cid = state.crystal_store.put_crystal(
+            crystal_type="DependencyGraphCrystal",
+            project_id=project_id,
+            layer="L2",
+            module="__dependency_graph__",
+            name=f"depgraph_{project_id}",
+            content=content,
+            parent_ids=[],
+        )
+    except Exception as e:
+        return f"Error storing updated DependencyGraphCrystal: {e}"
+
+    # Format report
+    lines = [
+        "## Module Marked Complete",
+        "",
+        f"**Module:** {module}",
+        f"**Status:** {old_status} → implemented ✅",
+        f"**Crystal:** {cid}",
+        f"**Completed so far:** {', '.join(sorted(completed)) if completed else '(none)'}",
+        "",
+    ]
+
+    remaining = {m for m in graph if m not in completed}
+    if not remaining:
+        lines.append("### 🎉 All modules implemented!")
+        lines.append("")
+        lines.append("All modules are marked as implemented. Proceed to L8 integration testing.")
+    elif ready:
+        lines.append("### Now Ready to Implement")
+        lines.append("")
+        for m in sorted(ready):
+            deps = [d for d in graph.get(m, []) if d in graph]
+            dep_status = (
+                "✅ all deps satisfied"
+                if all(d in completed for d in deps)
+                else ""
+            )
+            lines.append(f"- **{m}** {dep_status}")
+        lines.append("")
+    else:
+        lines.append(
+            "No additional modules are ready yet. Remaining modules have "
+            "unsatisfied dependencies or are part of a dependency cycle."
+        )
+        lines.append("")
+
+    if cycles:
+        cycle_strs = [" → ".join(c) for c in cycles]
+        lines.append("### ⚠️ Unresolved Cycles")
+        lines.append("")
+        for cs in cycle_strs:
+            lines.append(f"- {cs}")
         lines.append("")
 
     return "\n".join(lines)

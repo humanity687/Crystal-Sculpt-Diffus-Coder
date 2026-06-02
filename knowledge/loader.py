@@ -41,8 +41,8 @@ def load_builtin_tools():
             print(f"⚠️ Tool {tool_name} is missing tool.py, skipping")
             continue
         if not readme_path.exists():
-            print(f"⚠️ Tool {tool_name} is missing raw_tools/{tool_name}.md, skipping")
-            continue
+            print(f"⚠️ Tool {tool_name} is missing raw_tools/{tool_name}.md, "
+                  f"tool will be loaded without documentation", file=sys.stderr)
 
         try:
             spec = importlib.util.spec_from_file_location(
@@ -99,11 +99,26 @@ def load_mcp_servers():
                 client.close()
                 continue
 
+            # Validate server name (only alphanumeric, underscores, hyphens)
+            if not name or not all(c.isalnum() or c in "_-" for c in name):
+                print(
+                    f"⚠️ Invalid MCP server name '{name}' — "
+                    f"only alphanumeric, underscores, and hyphens allowed. Skipping.",
+                    file=sys.stderr,
+                )
+                continue
+
             print(f"Connected to MCP server {name}, found {len(raw_tools)} tools")
             _mcp_clients.append(client)
             with _mcp_lock:
                 for tool in raw_tools:
-                    tool_name = tool["name"]
+                    tool_name = tool.get("name", "")
+                    if not tool_name or not isinstance(tool, dict):
+                        print(
+                            f"⚠️ MCP server '{name}' returned invalid tool entry: {tool}",
+                            file=sys.stderr,
+                        )
+                        continue
                     full_name = f"{name}/{tool_name}"
 
                     def make_wrapper(mcp_client, t_name):
@@ -124,10 +139,12 @@ def load_mcp_servers():
             continue
 
 
-def tools(tool_name: str, arguments: dict = None) -> str:
+def tools(tool_name: str = None, arguments: dict = None) -> str:
     """
     Unified tool call interface: Supports built-in tools and MCP tools (format: server_name/tool_name)
     """
+    if not tool_name:
+        return "Error: 'tool_name' parameter is required. Usage: tools(tool_name=\"read\", arguments={...})"
     if "/" in tool_name:
         with _mcp_lock:
             if tool_name in _mcp_tools:
