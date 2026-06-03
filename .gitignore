@@ -20,4 +20,10 @@ knowledge/skills/*
 knowledge/knowledge.db
 /private.key
 /public.key
-"Resume this session with.txt"
+Resume this session with.txt
+test_2048_integration.py
+test_game.py
+test_integration.py
+test_todo.py
+test.html
+2048.html
