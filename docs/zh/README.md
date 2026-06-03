@@ -1,267 +1,136 @@
-# FranxAgent 🤖
+# Crystal-Sculpt-Diffus-Coder
 
 [English](../../README.md) | **中文**
 
-**让 AI 像伙伴一样帮你干活，简单、安全、低成本。**  
-**现在，你可以在手机上直接操控电脑上的 AI，无需公网 IP，无需端口转发，一键开启安全远程访问。**
-
-FranxAgent 是一个轻量级的 AI 智能体框架，让 AI 能够读取文件、执行命令、搜索网络、理解多模态内容，并通过 MCP 协议真正操控世界。  
-**v5.0.0 引入了革命性的代码审查面板，彻底改变了你与 AI 协作编写代码的方式——再也不用盲目批准，每一处修改在触达你的文件之前都清晰可见、可编辑。**
+一个带有 Flask 网页界面的 AI 智能体框架，让 AI 能够读取文件、执行命令、搜索网络，并与你协作完成工程项目。通过 Cloudflare Tunnel 实现远程访问——无需公网 IP。
 
 ---
 
-## 🎉 v5.0.0 更新内容
+## 功能特性
 
-- 🔍 **代码审查面板**：当 AI 提出文件修改建议时，一个功能完整的代码编辑器会从右侧滑入，显示带有**红色（删除）和绿色（新增）差异标记**的语法高亮代码。你可以在**查看模式**和**编辑模式**之间切换，直接修改代码，只在点击"批准"时才将修改写入磁盘。不再盲目信任——每一行代码在落到你的文件之前都要经过你的审查。
-- 📊 **Mermaid 图表渲染**：聊天消息现在可以直接将 Mermaid 图表渲染为 SVG——流程图、时序图等，直接在对话中展示。
-- 📜 **智能滚动**：聊天区域仅在用户处于底部时自动跟随滚动；向上翻阅历史记录时不会被打断。
-- ✍️ **write 工具重生**：`write` 工具不再直接修改文件。它将 AI 的建议发送到前端，由你在代码审查面板中审查、编辑并批准修改——让你牢牢掌控一切。
-
----
-
-## ✨ 核心特性
-
-- 📱 **零配置远程访问**：集成 Cloudflare Tunnel，一键生成公网 URL，无需公网 IP、无需路由器设置，手机/平板直接访问电脑上的 FranxAgent。
-- 🔐 **军工级安全认证**：RSA 非对称加密 + JWT 短期令牌，支持"刷新即重登"（token 仅存内存，刷新页面即失效），彻底防止 token 泄露后的长期控制。
-- 🧠 **智能记忆与混合检索**：自动将对话历史存入向量库，结合 FTS5 关键词搜索，精准回忆跨会话内容。
-- 🛠️ **丰富的内置工具**：`read`、`write`、`command`、`search`、`add_skill` 等，支持自由扩展。
-- 🌐 **MCP 协议支持**：通过简单配置集成任何 stdio MCP 服务器，AI 自动学会使用其所有工具。
-- ⏰ **定时任务**：后台线程运行，支持每天重复任务，让 AI 在指定时间自动执行指令。
-- 📚 **技能系统**：Markdown 文件自动合并到系统提示，赋予 AI 额外知识、规则或工作流。
-- 🔒 **安全第一**：`command` 工具禁止直接删除文件，高风险操作可配置审批。
-- 🕸️ **免费网络搜索**：集成 DuckDuckGo，无需 API Key。
-- 🖼️ **多模态理解**：支持图片、视频、文档（Word、Excel、PDF 等）分析。
-- ⚙️ **极简配置**：一个 `config.json` 搞定所有设置。
-- 📦 **轻量依赖**：极简依赖。
-- 💻 **跨平台兼容**：Windows / Linux / macOS。
+- **工具调用型 AI 对话** — 模型自主调用工具：读写文件、执行命令、搜索网络
+- **代码审查面板** — AI 以 diff 形式提出修改建议；你审查、编辑、批准后才会写入磁盘
+- **工程晶体记忆** — L0-L8 工作流，结构化产物（契约、逻辑、追踪）存储在 SQLite 中，通过向量相似度检索
+- **依赖图管理** — AI 在 L2 阶段定义模块依赖关系；影响分析和拓扑排序指导实现顺序
+- **MCP 协议** — 集成任何 stdio MCP 服务器；工具自动发现，格式为 `服务器名/工具名`
+- **两级摘要记忆** — 摘要嵌入向量库用于检索，完整内容可通过 `recall` 工具获取
+- **定时任务** — 后台守护线程在指定 HH:MM 时间执行命令
+- **安全认证** — ECIES（ECDH + AES-256-GCM）+ bcrypt + JWT（1小时有效期）
+- **跨平台** — Windows / Linux / macOS
 
 ---
 
-## 🔍 代码审查面板（v5.0.0）
+## 快速开始
 
-代码审查面板是 v5.0.0 的核心亮点。当 AI 使用 `write` 工具时，它不再直接修改你的文件，而是将建议发送到一个从聊天界面右侧滑入的完整代码编辑器中：
-
-- **语法高亮**：由 CodeMirror 5 驱动，根据文件扩展名自动识别语言（Python、JavaScript、C/C++、Rust、Go 等）。
-- **差异标记**：被删除的行显示为红色半透明背景；新增的行显示为绿色半透明背景。行号也会相应着色。
-- **查看模式**：只读状态，完整显示所有差异。逐行检查 AI 的每处修改。
-- **编辑模式**：一键切换——编辑器变为完全可编辑。修改 AI 的建议，修正错误，或加入你自己的改动。
-- **批准或拒绝**：只有当你点击"批准"时，最终代码才会写入你的文件。点击"拒绝"则完全放弃本次建议。
-- **流畅动画**：面板从右侧滑入，关闭时从右侧滑出。
-
-这将 FranxAgent 从一个"替你写代码的 AI"转变为一个"与你协作编码的 AI"。
-
----
-
-## 🚀 快速开始
-
-### 1. 克隆仓库
 ```bash
-git clone https://github.com/xhdlphzr/FranxAgent.git
-cd FranxAgent
+# 1. 克隆仓库
+git clone https://github.com/humanity687/Crystal-Sculpt-Diffus-Coder.git
+cd Crystal-Sculpt-Diffus-Coder
+
+# 2. 安装（创建虚拟环境、安装依赖）
+./init.sh       # macOS/Linux
+init.bat        # Windows
+
+# 3. 编辑 config.json（api_key, base_url, model）
+
+# 4. 运行
+./run.sh        # macOS/Linux
+run.bat         # Windows
 ```
 
-### 2. 安装依赖
-Windows 用户双击 `init.bat`，macOS 用户双击 `init.sh` 即可自动创建虚拟环境并安装依赖。
-
-### 3. 配置
-根据你的需求修改 `config.json` （参见下方配置说明）。
-
-### 4. 运行
-Windows 用户双击 `run.bat`，macOS 用户双击 `run.sh`。  
-启动后，终端会显示一个公网 URL（例如 `https://xxxx.trycloudflare.com`）。**用手机浏览器打开这个链接**，首次访问会进入注册页面设置密码，之后输入密码即可在手机上操控电脑上的 AI。
-
-> 💡 **安全提示**：JWT token 有效期仅 1 小时，且仅存于浏览器内存中，刷新页面即失效。建议不要在公共场所的电脑上使用远程访问。
-
-### 5. 使用
-在聊天框输入你的问题，AI 会自动调用工具帮你完成。手机端操作与电脑端完全一致，支持触摸、滑动、语音输入（手机自带）。
+启动后，终端会显示一个 Cloudflare Tunnel 公网 URL。用任意设备打开——首次访问会引导你设置密码。
 
 ---
 
-## ⚠️ 免责声明
-
-FranxAgent 提供的 Cloudflare Tunnel 远程访问功能仅作为技术便利，用户需自行承担因网络暴露、设备丢失、密码泄露、第三方攻击等任何原因导致的设备、数据或人身财产安全风险。使用前请确保：
-- 设置强密码，并定期更换；
-- 仅在受信任的网络和设备上启用远程访问；
-- 理解并接受：任何联网服务都可能存在未知安全漏洞。
-
-项目作者及贡献者不对因使用本软件造成的任何直接或间接损失承担责任。**使用即表示您已阅读并同意本声明。**
-
----
-
-## ⚙️ 配置说明
-
-在 `config.json` 中，你可以根据需要调整以下参数：
+## 配置说明（`config.json`）
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `language` | string | `"en"` | UI 和系统提示的语言。 |
-| `api_key` | string | - | API 密钥（必填）。Ollama 可填任意值。 |
-| `base_url` | string | - | API 基础地址（必填）。例如 Ollama 为 `http://localhost:11434/v1`，GLM 为 `https://open.bigmodel.cn/api/paas/v4`。 |
-| `model` | string | - | 模型名称（必填）。推荐 `glm-4.7-flash`、`qwen2.5:7b` 等。 |
-| `settings` | string | `"You are a helpful AI assistant."` | 系统提示词，用于设定 AI 的角色或行为规则。 |
-| `temperature` | float | `0.8` | 生成随机性，取值范围 0~2（推荐 0~1）。值越低回答越确定，越高越有创意。 |
-| `thinking` | bool | `false` | 是否启用深度思考模式（仅对 GLM 模型有效）。开启后模型会输出推理过程，但响应稍慢。 |
-| `knowledge_k` | int | `5` | 每次对话时检索的知识片段数量，用于向量库知识增强。值越大，注入的系统提示越长，但可能获得更多相关信息。 |
-| `mcp_servers` | list | `[]` | MCP 服务器配置列表，每个元素包含 `name`、`command`、`args`（可选）。例如：`[{"name": "windows-mcp", "command": "uvx", "args": ["windows-mcp"]}]`。 |
-
-**多模态工具独立配置（可选）**  
-在 `tools` 字段中可为 `ett`（多模态理解）单独指定参数，若不设置则自动使用顶层配置：
-
-```json
-{
-    "tools": {
-        "ett": {
-            "api_key": "your-ett-api-key",
-            "base_url": "https://open.bigmodel.cn/api/paas/v4",
-            "model": "glm-4.6v-flash",
-            "temperature": 0.8,
-            "thinking": false,
-            "max_retries": 5
-        }
-    }
-}
-```
-
-> ⚠️ **注意**：多模态工具 `ett` 目前仅支持智谱 GLM 系列模型（如 `glm-4.6v-flash`），使用前请确保配置了正确的 API 密钥和模型名称。
-
-**示例配置（使用智谱 GLM + Windows-MCP）**：
-```json
-{
-    "language": "en",
-    "api_key": "your-zhipu-api-key",
-    "base_url": "https://open.bigmodel.cn/api/paas/v4",
-    "model": "glm-4.7-flash",
-    "temperature": 0.8,
-    "thinking": false,
-    "knowledge_k": 5,
-    "settings": "You are a helpful AI assistant.",
-    "tools": {
-        "ett": {
-            "api_key": "your-zhipu-api-key",
-            "model": "glm-4.6v-flash",
-            "temperature": 0.8,
-            "thinking": false,
-            "max_retries": 20
-        }
-    },
-    "mcp_servers": [
-        {
-            "name": "windows-mcp",
-            "command": "uvx",
-            "args": ["windows-mcp"]
-        }
-    ]
-}
-```
-
-> 💡 **小贴士**：修改配置后保存，新配置将在下一次对话时自动生效，无需重启服务。
-
-> 💡 **模型推荐**：推荐 `glm-4.7-flash` 作为对话模型，`glm-4.6v-flash` 作为视觉模型，两者配合使用效果最佳。
+| `api_key` | string | — | API 密钥（必填）。Ollama 可填任意值。 |
+| `base_url` | string | — | API 基础地址。Ollama：`http://localhost:11434/v1` |
+| `model` | string | — | 模型名称。推荐：`glm-4.7-flash` |
+| `temperature` | float | `0.8` | 随机性 0-2。值越低越确定。 |
+| `thinking` | bool | `false` | 深度思考模式（仅 GLM 模型）。 |
+| `knowledge_k` | int | `5` | 每次检索的知识片段数。 |
+| `language` | string | `"en"` | UI 语言（`en` / `zh`）。 |
+| `mcp_servers` | list | `[]` | MCP 服务器配置。每项：`{name, command, args}`。 |
+| `memory_weights` | object | — | 按类型覆盖检索权重。 |
+| `tools.ett` | object | — | 多模态模型配置（需使用 GLM 视觉模型）。 |
 
 ---
 
-## 🛠️ 工具说明
+## 内置工具
 
-| 工具 | 作用 | 安全限制 / 备注 |
-|------|------|------------------|
-| `time` | 获取当前日期时间 | 只读，无风险 |
-| `read` | 读取文件内容或项目结构 | 只读。代码文件返回 AST 结构 + 带行号内容；目录返回项目骨架。支持文档、图片、视频。 |
-| `write` | 提出文件修改建议（先审查，后写入） | **v5.0.0**：不再直接写入文件。将 AI 建议发送到代码审查面板，你可以在其中审查差异、编辑代码并批准修改。支持 `overwrite`、`append` 和 `edit` 模式。 |
-| `command` | 执行系统命令 | ❌ 禁止直接删除文件（自动提示改用移动操作）；支持超时控制 |
-| `search` | 网络搜索（DuckDuckGo） | 免费，无需 API Key，返回标题、摘要、链接 |
-| `add_skill` | 保存可复用技能 | 将 Markdown 技能文件保存并立即索引到向量数据库，零重启，实时检索。无需确认。 |
+| 工具 | 用途 |
+|------|------|
+| `read` | 读取文件、目录、图片、文档 |
+| `write` | 提出文件修改建议 — diff 审查后写入（支持覆盖、编辑、替换、插入模式） |
+| `command` | 执行 shell 命令（白名单机制；禁止删除操作） |
+| `search` | 通过 DuckDuckGo 搜索网络（免费，无需 API 密钥） |
+| `time` | 当前日期/时间 |
+| `recall` | 通过 memory_id 从知识库获取完整文本内容 |
+| `add_skill` | 保存可复用的技能 .md 文件到向量数据库 |
+| `set_project` | 激活分阶段工程上下文（project_id, phase, module） |
+| `crystallize` | 存储/查找思维晶体（ContractCrystal, LogicCrystal, TraceCrystal 等） |
+| `dependency` | 管理模块依赖图（define, recommend, impact 分析） |
+| `request_approval` | 提交 Lx 内容供用户审批，同时记录快照 |
 
-**MCP 工具集成**  
-您可以在 `config.json` 的 `mcp_servers` 中添加任意 MCP 服务器（stdio 模式），例如：
-```json
-{
-    "mcp_servers": [
-        {
-            "name": "windows-mcp",
-            "command": "uvx",
-            "args": ["windows-mcp"]
-        }
-    ]
-}
-```
-启动 FranxAgent 后，AI 会自动发现这些服务器提供的所有工具，并通过统一的 `tools` 工具调用它们。您无需额外配置，直接对 AI 说"截图"、"点击鼠标"等即可。
-
-**远程硬件（如树莓派）**  
-如果你想让 FranxAgent 控制另一台设备上的硬件（例如树莓派的 GPIO），可以通过 SSH 在本地启动远程 MCP 服务器。只需在 `config.json` 的 `mcp_servers` 中添加如下配置：
-
-```json
-{
-  "mcp_servers": [
-    {
-      "name": "raspberry-gpio",
-      "command": "ssh",
-      "args": ["-T", "pi@树莓派IP", "python", "/home/pi/raspberry_mcp.py"]
-    }
-  ]
-}
-```
-
-**说明**：
-- 所有工具（内置 + MCP）都通过唯一的 `tools` 工具调用，AI 只需记住一个工具名，极大节省 token。
-- 内置工具的名称（如 `read`、`write`）已固定，MCP 工具名格式为 `服务器名/工具名`（例如 `windows-mcp/snapshot`）。
-- `command` 工具已内置安全拦截，禁止直接执行删除类命令。
-- `similarity` 可用于比较文本相似度，适用于去重、查重等场景。
-- 定时任务功能由后台线程支持，每天重复执行，无需用户持续在线。
-- `ett` 工具目前仅支持智谱 GLM 系列模型，使用时请确保 `tools.ett` 配置正确。
+所有工具通过统一的 `tools` 函数调用。MCP 工具使用 `服务器名/工具名` 格式。
 
 ---
 
-## 🧠 技能系统
+## 知识库
 
-FranxAgent 支持从 `knowledge/skills/` 文件夹加载 Markdown 文件，并将其内容自动合并到系统提示词中。你可以通过编写 `.md` 文件来为 AI 注入领域知识、行为准则、工作流程等，从而定制它的行为。
+两级摘要记忆系统：摘要嵌入在向量数据库中；完整内容存储在磁盘上，通过 `recall` 工具检索。
 
-**使用方法**：
-1. 在项目 `knowledge/` 目录创建 `skills/` 文件夹（若不存在）。
-2. 将你的 Markdown 文件放入其中（例如 `coding_style.md`、`company_rules.md`），你可以从 [skills](https://github.com/xhdlphzr/FranxAgent/tree/skills) 中复制一些技能（注意，这些技能会进行一定的审核，但FranxAgent不对内容负责）。
-3. 启动 FranxAgent，系统会自动读取所有 `.md` 文件并放入数据库，等待搜索。
+| 类型 | 权重 | 说明 |
+|------|------|------|
+| `tool_summary` | 1.0 | 工具文档 |
+| `skill_summary` | 0.8 | 技能文档 |
+| `experience_crystal` | 0.6 | 跨项目工程经验 |
+| `conversation_summary` | 0.3 | 对话回合摘要 |
 
-**示例**：
-假设 `skills/coding_style.md` 内容为：
-> 代码风格：使用 4 空格缩进，变量名采用 snake_case，函数名采用 camelCase。
-
-AI 在后续对话中就会遵循这些风格约定。
-
-> ⚠️ **免责声明**：技能文件由用户自行提供，FranxAgent 不对其中的内容负责。请确保添加的内容不违反法律法规，且不包含敏感或有害信息。
+检索使用混合模式：向量相似度 + FTS5 关键词搜索，通过 RRF 融合排序。
 
 ---
 
-## 🔨 工具系统
+## 工程晶体系统（L0-L8）
 
-FranxAgent 支持从 `knowledge/tools/` 目录加载工具。
+SQLite 支持的结构化记忆，服务于 idea-to-code-sculpting 工作流：
 
-**使用方法**：
+| 层级 | 晶体类型 | 内容 |
+|------|---------|------|
+| L1 | ArchCrystal | architecture_summary, tech_stack, core_flow |
+| L2 | ModMap | modules[], dependencies{} |
+| L3 | ContractCrystal | signature, preconditions, postconditions, constraints |
+| L4 | LogicCrystal | algorithm_steps, boundary_handling |
+| L6 | SkeletonCrystal | code_skeleton, language |
+| L7 | ImplCrystal | code, tests, language |
+| L8 | TraceCrystal | symptom, root_cause, fix |
 
-将 [tools](https://github.com/xhdlphzr/FranxAgent/tree/tools) 中复制一些工具（注意，这些工具会进行一定的审核，但FranxAgent不对内容负责）到 `knowledge/tools/` 目录下。
+另含 `DependencyGraphCrystal` 用于模块依赖追踪（define → recommend → impact）。
 
----
-
-## 🧠 记忆与定时任务
-
-- **长期记忆**：FranxAgent 不再依赖 `memory.txt`，而是将完整对话历史自动保存到 `knowledge/memories/` 目录（每个会话一个 `.md` 文件）。下次启动时，这些历史会被自动加载到向量知识库中，AI 可以通过**混合检索**（向量语义 + 关键词匹配）回忆起之前的对话内容。
-- **定时任务**：后台线程每 10 秒检查 `tasks.json`，到达指定时间（如 `14:30`）时执行对应指令，支持每天重复，不会重复执行。
-
----
-
-## 🤝 贡献指南
-
-欢迎提交 Issue 或 Pull Request！请确保代码风格清晰，并更新相关文档。
+核心行为：活力评分、分阶段上下文注入、向量相似度搜索、追踪链遍历。
 
 ---
 
-## 📄 许可证
+## 安全机制
+
+- ECIES（ECDH + HKDF + AES-256-GCM）加密密码传输
+- bcrypt 密码哈希，JWT 会话令牌（1小时有效期，仅存内存）
+- `command` 工具：白名单机制，禁止删除命令，安全命令自动执行，危险命令需确认
+- `write` 工具：从不直接写入——始终经过代码审查面板
+
+---
+
+## 免责声明
+
+Cloudflare Tunnel 远程访问功能仅作为技术便利提供。用户需自行承担因网络暴露、设备丢失、密码泄露或第三方攻击等带来的风险。请使用强密码，仅在受信任的网络和设备上启用远程访问，并理解任何联网服务都可能存在未知安全漏洞。
+
+项目作者及贡献者不对因使用本软件造成的任何直接或间接损失承担责任。使用即表示您已阅读并同意本声明。
+
+---
+
+## 许可证
 
 [GPL v3](COPYING)
-
----
-
-## 🙏 致谢
-
-- 所有使用和支持 FranxAgent 的朋友
-- [xhdlphzr](https://github.com/xhdlphzr)——一个忙碌的码农
-- [zhiziwj](https://github.com/zhiziwj)——提出了一个建议，虽然没有实现，不过很有价值，同时实现了一个功能
-- [humanity687](https://github.com/humanity687)——提出了几个很有建设性的问题，已经一一研究修复
