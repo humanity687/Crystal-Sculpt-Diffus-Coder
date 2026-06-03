@@ -354,28 +354,38 @@ body {
   opacity: 0.65;
 }
 
-/* Token usage pill */
-.token-pill {
-  display: inline-flex;
+/* ── Token Usage Bar (between messages and input) ──────────────────── */
+.token-usage-bar {
+  display: flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
-  color: #64748b;
+  gap: 8px;
+  padding: 3px 12px;
   background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  white-space: nowrap;
+  border-top: 1px solid #e2e8f0;
+  font-size: 0.72rem;
+  color: #64748b;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
   flex-shrink: 0;
 }
-.token-pill .tk-num {
+.token-usage-text {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.token-usage-text .token-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.token-usage-text .token-label {
+  color: #94a3b8;
+}
+.token-usage-text .token-value {
   color: #475569;
   font-weight: 500;
 }
-.token-pill .tk-sep {
+.token-usage-text .token-sep {
   color: #cbd5e1;
-  margin: 0 1px;
 }
 
 /* ── Per-message Token Badge ────────────────────────────────────────── */

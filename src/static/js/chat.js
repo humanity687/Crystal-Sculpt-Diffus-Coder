@@ -680,13 +680,14 @@ function updateProjectStatusBar(data) {
   }
 }
 
-// ── Token Usage Pill (inline in header) ─────────────────────────────────────
+// ── Token Usage Bar (top of chat-messages) ──────────────────────────────────
 function updateTokenUsageBar(data) {
-  const pill = document.getElementById("token-pill");
-  if (!pill) return;
+  const bar = document.getElementById("token-usage-bar");
+  const text = document.getElementById("token-usage-text");
+  if (!bar || !text) return;
 
   sessionTotalTokens += data.total_tokens || 0;
-  pill.style.display = "inline-flex";
+  bar.style.display = "flex";
 
   const fmt = (n) => {
     if (n >= 10000) return (n / 1000).toFixed(1) + "k";
@@ -694,9 +695,26 @@ function updateTokenUsageBar(data) {
     return String(n);
   };
 
-  pill.innerHTML =
-    '<span class="tk-num">' + fmt(data.total_tokens) + '</span>' +
-    '<span class="tk-sep">tokens</span>';
+  text.innerHTML =
+    '<span class="token-stat">' +
+    '<span class="token-label">本轮</span>' +
+    '<span class="token-value">' + fmt(data.total_tokens) + '</span>' +
+    '</span>' +
+    '<span class="token-sep">|</span>' +
+    '<span class="token-stat">' +
+    '<span class="token-label">输入</span>' +
+    '<span class="token-value">' + fmt(data.input_tokens) + '</span>' +
+    '</span>' +
+    '<span class="token-sep">|</span>' +
+    '<span class="token-stat">' +
+    '<span class="token-label">输出</span>' +
+    '<span class="token-value">' + fmt(data.output_tokens) + '</span>' +
+    '</span>' +
+    '<span class="token-sep">|</span>' +
+    '<span class="token-stat">' +
+    '<span class="token-label">会话</span>' +
+    '<span class="token-value">' + fmt(sessionTotalTokens) + '</span>' +
+    '</span>';
 }
 
 function appendTokenBadge(msgDiv, data) {
