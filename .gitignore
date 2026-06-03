@@ -3,6 +3,12 @@
 /messages.json
 __pycache__/
 *.pyc
+*.db
+.DS_Store
+.venv/
+*.egg-info/
+dist/
+build/
 knowledge/raw_memories/*
 knowledge/raw_skills/*
 knowledge/raw_tools/*
@@ -14,3 +20,4 @@ knowledge/skills/*
 knowledge/knowledge.db
 /private.key
 /public.key
+"Resume this session with.txt"
