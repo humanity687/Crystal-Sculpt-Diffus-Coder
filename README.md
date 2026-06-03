@@ -137,9 +137,3 @@ The project authors and contributors accept no liability for any direct or indir
 
 ---
 
-## Acknowledgements
-
-- [xhdlphzr](https://github.com/xhdlphzr) — original author
-- [zhiziwj](https://github.com/zhiziwj) — contributions and suggestions
-- [humanity687](https://github.com/humanity687) — bug reports and fixes
-- All users and contributors
