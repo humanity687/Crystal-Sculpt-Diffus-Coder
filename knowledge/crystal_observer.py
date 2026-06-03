@@ -175,8 +175,8 @@ class CrystalObserver:
 
             crystal_id = self.crystal_store.put_crystal(
                 crystal_type=crystal_type,
-                project_id=active_project["project_id"],
-                layer=active_project["phase"],
+                project_id=active_project.get("project_id", ""),
+                layer=active_project.get("phase", "L0"),
                 module=module,
                 name=name,
                 content=content,

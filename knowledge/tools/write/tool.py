@@ -142,6 +142,10 @@ def execute(
                 f"({total_lines} lines)"
             )
 
+        # Fall back to content if new_content is empty (model sometimes uses
+        # "content" instead of "new_content" for edit/insert modes)
+        effective_new = new_content if new_content else content
+
         actual_end = min(end_line, total_lines)
         clamp_note = ""
         if end_line > total_lines:
@@ -151,7 +155,7 @@ def execute(
 
         new_lines = (
             original_lines[:start_idx]
-            + new_content.split("\n")
+            + effective_new.split("\n")
             + original_lines[end_idx:]
         )
         result_content = "\n".join(new_lines)
@@ -190,15 +194,16 @@ def execute(
     #  insert
     # ======================================================================
     if mode == "insert":
-        if not new_content:
-            return "Error: 'new_content' parameter is required for insert mode"
+        effective_new = new_content if new_content else content
+        if not effective_new:
+            return "Error: 'new_content' (or 'content') parameter is required for insert mode"
         if after_line < 0 or after_line > total_lines:
             return (
                 f"Error: after_line ({after_line}) must be between "
                 f"0 and {total_lines}"
             )
 
-        insert_lines = new_content.split("\n")
+        insert_lines = effective_new.split("\n")
         if after_line == 0:
             new_lines = insert_lines + original_lines
         elif after_line == total_lines:

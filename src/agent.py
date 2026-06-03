@@ -540,7 +540,7 @@ class FranxAgent:
         if self.crystal_store and state.active_project:
             ctx = self.crystal_store.working_context(
                 project_id=state.active_project.get("project_id", ""),
-                phase=state.active_project["phase"],
+                phase=state.active_project.get("phase", ""),
                 module=state.active_project.get("module"),
             )
             if ctx:
@@ -548,15 +548,15 @@ class FranxAgent:
                 if ctx_hash != self._last_crystal_ctx_hash:
                     print(
                         f"[CrystalStore] Injecting {len(ctx)} chars of engineering state "
-                        f"(project={state.active_project['project_id']}, "
-                        f"phase={state.active_project['phase']})",
+                        f"(project={state.active_project.get('project_id', '')}, "
+                        f"phase={state.active_project.get('phase', '')})",
                         file=sys.stderr,
                     )
                     messages.append({"role": "system", "content": ctx})
                     self._last_injections.append({
                         "source": "set_project",
                         "kind": "crystal_context",
-                        "phase": state.active_project["phase"],
+                        "phase": state.active_project.get("phase", ""),
                         "module": state.active_project.get("module", ""),
                         "summary": f"Engineering crystal state ({len(ctx)} chars)"
                         + (f" for {state.active_project.get('module')}" if state.active_project.get("module") else ""),
@@ -566,7 +566,7 @@ class FranxAgent:
             else:
                 print(
                     f"[CrystalStore] No relevant crystals for "
-                    f"phase={state.active_project['phase']}, module={state.active_project.get('module')}",
+                    f"phase={state.active_project.get('phase', '')}, module={state.active_project.get('module')}",
                     file=sys.stderr,
                 )
         elif self.crystal_store:
@@ -1370,6 +1370,28 @@ class FranxAgent:
                                 if arguments is None:
                                     arguments = {}
 
+                                # Undo double JSON-encoding: when the model wraps
+                                # the inner arguments as a JSON string instead of
+                                # a JSON object, e.g. arguments="{\"path\": ...}"
+                                if isinstance(arguments.get("arguments"), str):
+                                    try:
+                                        arguments["arguments"] = json.loads(
+                                            arguments["arguments"]
+                                        )
+                                    except json.JSONDecodeError:
+                                        try:
+                                            import ast
+                                            arguments["arguments"] = ast.literal_eval(
+                                                arguments["arguments"]
+                                            )
+                                        except (ValueError, SyntaxError):
+                                            pass
+
+                                # Fix model's common typo: "tool" (singular) → "tools"
+                                if func_name == "tool":
+                                    func_name = "tools"
+                                    tool_call["function"]["name"] = "tools"
+
                                 # If the model directly called a built-in tool name (e.g., time, read), automatically convert to tools call
                                 if func_name != "tools" and "/" not in func_name:
                                     # Construct new arguments: tool_name is the original function name, arguments are the original parameters
@@ -1390,6 +1412,16 @@ class FranxAgent:
                                 if func_name == "tools":
                                     # Extract tool_name from arguments (when wrapped)
                                     actual_tool_name = arguments.get("tool_name")
+                                    # Fallback: model sometimes nests tool_name inside
+                                    # the inner arguments dict instead of at top level
+                                    if not actual_tool_name and isinstance(
+                                        arguments.get("arguments"), dict
+                                    ):
+                                        actual_tool_name = arguments["arguments"].pop(
+                                            "tool_name", None
+                                        )
+                                        if actual_tool_name:
+                                            arguments["tool_name"] = actual_tool_name
                                 else:
                                     actual_tool_name = func_name
 
@@ -2055,6 +2087,11 @@ class FranxAgent:
 
         summary = self._build_module_summary(project_id, module_name)
         if not summary:
+            print(
+                f"[Archive] Module {module_name}: _build_module_summary returned empty, "
+                f"pending_completion preserved for retry",
+                file=sys.stderr,
+            )
             return False
 
         summary_msg = {"role": "assistant", "content": summary}

@@ -157,7 +157,21 @@ def tools(tool_name: str = None, arguments: dict = None) -> str:
     if tool_name not in _internal_tools:
         return f"Error: Unknown tool {tool_name}"
     try:
-        return _internal_tools[tool_name](**(arguments or {}))
+        args = arguments or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                try:
+                    import ast
+                    args = ast.literal_eval(args)
+                except (ValueError, SyntaxError):
+                    return (
+                        f"Error: 'arguments' parameter is a string that could not be "
+                        f"parsed as JSON. Pass arguments as a JSON object directly, "
+                        f"e.g. arguments={{...}}, not arguments='{{...}}'"
+                    )
+        return _internal_tools[tool_name](**args)
     except Exception as e:
         return f"Call failed: {e}"
 

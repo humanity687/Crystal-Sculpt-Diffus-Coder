@@ -31,7 +31,11 @@ def execute(name: str, content: str):
 
     filename = f"{safe_name}.md"
     filepath = RAW_SKILLS_DIR / filename
-    relative_path = str(filepath.relative_to(KNOWLEDGE_ROOT))
+    try:
+        relative_path = str(filepath.relative_to(KNOWLEDGE_ROOT))
+    except ValueError:
+        import os
+        relative_path = os.path.relpath(filepath, KNOWLEDGE_ROOT)
     source_key = f"file:{relative_path}"
 
     # Write the raw skill file
@@ -55,23 +59,9 @@ def execute(name: str, content: str):
     summary_path = SKILLS_SUMMARY_DIR / f"{safe_name}.summary.json"
     summary_path.write_text(json.dumps(summary_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Remove old vector entries with the same source (handle updates)
-    conn = sqlite3.connect(VECTOR_DB_PATH)
-    try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM vectors WHERE source = ?", (source_key,))
-        old_ids = cursor.fetchall()
-        for (old_id,) in old_ids:
-            cursor.execute("DELETE FROM fts WHERE rowid = ?", (old_id,))
-        cursor.execute("DELETE FROM vectors WHERE source = ?", (source_key,))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    # Index summary into vector DB
+    # Index new summary first (idempotent upsert), then clean up old entries.
+    # If the DELETE step fails, the worst case is stale entries coexist with
+    # the new one — the DB is still consistent.
     add_summary(
         memory_id=memory_id,
         text=searchable,
@@ -80,16 +70,25 @@ def execute(name: str, content: str):
         summary_json=json.dumps(summary_data, ensure_ascii=False),
     )
 
-    # Update file_versions to prevent re-indexing on restart
-    mtime = filepath.stat().st_mtime
     conn = sqlite3.connect(VECTOR_DB_PATH)
     try:
         cursor = conn.cursor()
+        cursor.execute("SELECT id FROM vectors WHERE source = ?", (source_key,))
+        old_ids = cursor.fetchall()
+        for (old_id,) in old_ids:
+            cursor.execute("DELETE FROM fts WHERE rowid = ?", (old_id,))
+        cursor.execute("DELETE FROM vectors WHERE source = ?", (source_key,))
+
+        # Update file_versions to prevent re-indexing on restart
+        mtime = filepath.stat().st_mtime
         cursor.execute(
             "INSERT OR REPLACE INTO file_versions (path, mtime, last_updated) VALUES (?, ?, ?)",
             (relative_path, mtime, time.time()),
         )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

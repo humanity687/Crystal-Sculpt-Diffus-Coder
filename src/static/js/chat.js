@@ -1226,6 +1226,12 @@ async function sendMessage() {
             } else if (data.type === "tool_call") {
               removeTypingDot(assistantMsgDiv);
               assistantMsgDiv.classList.remove("temp");
+              // Clear the initial "thinking" placeholder from old containers
+              assistantMsgDiv.querySelectorAll(".assistant-content").forEach(c => {
+                if (!c.textContent.trim() || c.textContent.trim() === t("chat.thinking")) {
+                  c.textContent = "";
+                }
+              });
               addToolCallBlockStructured(
                 assistantMsgDiv,
                 data.call_id,

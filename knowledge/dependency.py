@@ -89,6 +89,14 @@ def topological_sort(graph: dict[str, list[str]]) -> list[str]:
             else:
                 missing_deps.add(dep)
 
+    if missing_deps:
+        import sys
+        print(
+            f"[Dependency] topological_sort: {len(missing_deps)} external "
+            f"dependencies not in graph: {', '.join(sorted(missing_deps))}",
+            file=sys.stderr,
+        )
+
     queue: deque[str] = deque(n for n, d in in_degree.items() if d == 0)
     result: list[str] = []
 

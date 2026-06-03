@@ -637,7 +637,7 @@ class CrystalStore:
             ]
             for t in traces:
                 content = t.get("content", {}) if isinstance(t.get("content"), dict) else {}
-                lines.append(f"- **{t['name']}**: {content.get('root_cause', '')}")
+                lines.append(f"- **{t['name']}**: {content.get('root_cause') or ''}")
             parts.append("\n".join(lines))
 
         return "\n\n".join(parts) + "\n" if parts else ""

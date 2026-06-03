@@ -12,6 +12,7 @@ import json
 import queue
 import sys
 import uuid
+import threading
 import markdown
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 from src.auth import login_required
@@ -22,6 +23,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from knowledge import search, add_conversation, add_conversation_with_llm
 
 chat_bp = Blueprint("chat", __name__)
+
+# Turn counter for LLM summarization throttling (every 3rd turn)
+_summary_counter = [0]  # list for mutable int across requests
 
 
 @chat_bp.route("/chat", methods=["POST"])
@@ -353,31 +357,37 @@ def chat():
                     yield f"data: {json.dumps({'type': 'error', 'text': f'Markdown rendering failed: {str(e)}'})}\n\n"
 
             # Conversation history (two-level summary memory)
+            # LLM summarization is throttled to every 3rd turn to reduce API costs.
+            # Intermediate turns use extractive summarization (no API call).
             if full_response:
                 agent = state.chat_agent
                 if agent and hasattr(agent, "client") and agent.client:
-                    # Prefer lightweight model for summarization (cheaper/faster)
-                    try:
-                        from knowledge.lightweight import is_available, get_model as _lw_model
-                        from knowledge.lightweight import _get_client as _lw_client
-                        if is_available():
+                    _summary_counter[0] += 1
+                    if _summary_counter[0] % 3 == 0:
+                        # Prefer lightweight model for summarization (cheaper/faster)
+                        try:
+                            from knowledge.lightweight import is_available, get_model as _lw_model
+                            from knowledge.lightweight import _get_client as _lw_client
+                            if is_available():
+                                add_conversation_with_llm(
+                                    user_message,
+                                    full_response,
+                                    client=_lw_client(),
+                                    model=_lw_model(),
+                                    background=True,
+                                )
+                            else:
+                                raise RuntimeError("lightweight unavailable")
+                        except Exception:
                             add_conversation_with_llm(
                                 user_message,
                                 full_response,
-                                client=_lw_client(),
-                                model=_lw_model(),
+                                client=agent.client,
+                                model=agent.model,
                                 background=True,
                             )
-                        else:
-                            raise RuntimeError("lightweight unavailable")
-                    except Exception:
-                        add_conversation_with_llm(
-                            user_message,
-                            full_response,
-                            client=agent.client,
-                            model=agent.model,
-                            background=True,
-                        )
+                    else:
+                        add_conversation(user_message, full_response)
                 else:
                     add_conversation(user_message, full_response)
 
