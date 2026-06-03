@@ -1,8 +1,7 @@
-// Copyright (C) 2026 humanity687
-// This file is part of FranxAgent.
-// FranxAgent is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or any later version.
-// FranxAgent is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
-// You should have received a copy of the GNU Affero General Public License along with FranxAgent.  If not, see <https://www.gnu.org/licenses/>.
+// This file is part of Crystal-Sculpt-Diffus-Coder.
+// Crystal-Sculpt-Diffus-Coder is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or any later version.
+// Crystal-Sculpt-Diffus-Coder is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+// You should have received a copy of the GNU Affero General Public License along with Crystal-Sculpt-Diffus-Coder.  If not, see <https://www.gnu.org/licenses/>.
 
 window.katexDisableDollar = true;
 const chatMessages = document.getElementById("chat-messages");
@@ -652,46 +651,42 @@ function addCompressionNotice(msgDiv, data) {
   }
 }
 
-// ── Project Status Bar ──────────────────────────────────────────────────────
-// Updates the header status bar when set_project activates/deactivates.
+// ── Project Status Pill (inline in header) ──────────────────────────────────
+// Updates the compact header pill when set_project activates/deactivates.
 function updateProjectStatusBar(data) {
-  const bar = document.getElementById("project-status-bar");
-  const indicator = document.getElementById("project-status-indicator");
-  const text = document.getElementById("project-status-text");
-  if (!bar || !indicator || !text) return;
+  const pill = document.getElementById("project-pill");
+  if (!pill) return;
 
   if (data.active) {
-    bar.style.display = "flex";
-    bar.classList.remove("inactive");
-    let html = "";
-    html +=
-      '<span class="phase-badge">' +
-      escapeHtml(data.phase || "?") +
-      "</span>";
+    pill.style.display = "inline-flex";
+    pill.classList.remove("inactive");
+    pill.classList.add("active");
+    pill.querySelector(".pill-phase").textContent = data.phase || "?";
+    const modEl = pill.querySelector(".pill-module");
     if (data.module) {
-      html +=
-        ' <span class="module-badge">' +
-        escapeHtml(data.module) +
-        "</span>";
+      modEl.style.display = "";
+      modEl.textContent = "/" + data.module;
+    } else {
+      modEl.style.display = "none";
     }
-    html +=
-      " <span>" + escapeHtml(data.project_id || "") + "</span>";
-    text.innerHTML = html;
+    pill.querySelector(".pill-project").textContent = data.project_id ? " · " + data.project_id : "";
   } else {
-    bar.style.display = "flex";
-    bar.classList.add("inactive");
-    text.textContent = t("chat.project_inactive") || "Project mode inactive";
+    pill.style.display = "inline-flex";
+    pill.classList.remove("active");
+    pill.classList.add("inactive");
+    pill.querySelector(".pill-phase").textContent = "";
+    pill.querySelector(".pill-module").textContent = "";
+    pill.querySelector(".pill-project").textContent = t("chat.project_inactive") || "No project";
   }
 }
 
-// ── Token Usage Bar ─────────────────────────────────────────────────────────
+// ── Token Usage Pill (inline in header) ─────────────────────────────────────
 function updateTokenUsageBar(data) {
-  const bar = document.getElementById("token-usage-bar");
-  const text = document.getElementById("token-usage-text");
-  if (!bar || !text) return;
+  const pill = document.getElementById("token-pill");
+  if (!pill) return;
 
   sessionTotalTokens += data.total_tokens || 0;
-  bar.style.display = "flex";
+  pill.style.display = "inline-flex";
 
   const fmt = (n) => {
     if (n >= 10000) return (n / 1000).toFixed(1) + "k";
@@ -699,26 +694,9 @@ function updateTokenUsageBar(data) {
     return String(n);
   };
 
-  text.innerHTML =
-    '<span class="token-stat">' +
-    '<span class="token-label">本轮:</span>' +
-    '<span class="token-value">' + fmt(data.total_tokens) + '</span>' +
-    '</span>' +
-    '<span class="token-sep">|</span>' +
-    '<span class="token-stat">' +
-    '<span class="token-label">输入:</span>' +
-    '<span class="token-value">' + fmt(data.input_tokens) + '</span>' +
-    '</span>' +
-    '<span class="token-sep">|</span>' +
-    '<span class="token-stat">' +
-    '<span class="token-label">输出:</span>' +
-    '<span class="token-value">' + fmt(data.output_tokens) + '</span>' +
-    '</span>' +
-    '<span class="token-sep">|</span>' +
-    '<span class="token-stat">' +
-    '<span class="token-label">会话:</span>' +
-    '<span class="token-value">' + fmt(sessionTotalTokens) + '</span>' +
-    '</span>';
+  pill.innerHTML =
+    '<span class="tk-num">' + fmt(data.total_tokens) + '</span>' +
+    '<span class="tk-sep">tokens</span>';
 }
 
 function appendTokenBadge(msgDiv, data) {
@@ -1159,6 +1137,9 @@ function stopGeneration() {
   }
   const orphanHandle = document.querySelector(".split-resize-handle");
   if (orphanHandle) orphanHandle.remove();
+  // Reset input area right offset from panel layout
+  const chatInput = document.querySelector(".chat-input-area");
+  if (chatInput) chatInput.style.right = "";
 }
 
 async function sendMessage() {
@@ -1470,24 +1451,25 @@ async function handleWriteProposal(msgDiv, data) {
   // ── Resize logic ──
   let resizeStartX = 0;
   let resizeStartWidth = 0;
-  const chatMessages = document.getElementById("chat-messages");
   const chatInput = document.querySelector(".chat-input-area");
 
   resizeHandle.addEventListener("mousedown", (e) => {
     e.preventDefault();
     resizeStartX = e.clientX;
-    resizeStartWidth = chatMessages.offsetWidth;
+    resizeStartWidth = wrapper.offsetWidth;
     resizeHandle.classList.add("active");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
 
     const onMove = (ev) => {
-      const dx = ev.clientX - resizeStartX;
-      const newWidth = Math.max(280, Math.min(window.innerWidth * 0.6, resizeStartWidth + dx));
-      const pct = (newWidth / chatPage.offsetWidth) * 100;
-      chatMessages.style.flex = "0 0 " + newWidth + "px";
-      chatMessages.style.maxWidth = newWidth + "px";
-      if (chatInput) chatInput.style.width = newWidth + "px";
+      const dx = resizeStartX - ev.clientX;
+      const newPanelWidth = Math.max(300, Math.min(window.innerWidth * 0.6, resizeStartWidth + dx));
+      wrapper.style.flex = "0 0 " + newPanelWidth + "px";
+      wrapper.style.minWidth = "0";
+      wrapper.style.maxWidth = "none";
+      if (chatInput) {
+        chatInput.style.right = newPanelWidth + "px";
+      }
     };
     const onUp = () => {
       resizeHandle.classList.remove("active");
@@ -1535,9 +1517,7 @@ async function handleWriteProposal(msgDiv, data) {
       chatPage.classList.remove("split-layout");
       wrapper.remove();
       resizeHandle.remove();
-      // Reset inline flex styles
-      if (chatMessages) { chatMessages.style.flex = ""; chatMessages.style.maxWidth = ""; }
-      if (chatInput) chatInput.style.width = "";
+      if (chatInput) chatInput.style.right = "";
     }, 250);
   });
 
@@ -1562,8 +1542,7 @@ async function handleWriteProposal(msgDiv, data) {
       chatPage.classList.remove("split-layout");
       wrapper.remove();
       resizeHandle.remove();
-      if (chatMessages) { chatMessages.style.flex = ""; chatMessages.style.maxWidth = ""; }
-      if (chatInput) chatInput.style.width = "";
+      if (chatInput) chatInput.style.right = "";
     }, 250);
   });
 }

@@ -1,9 +1,8 @@
 <!--
-Copyright (C) 2026 humanity687
-This file is part of FranxAgent.
-FranxAgent is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or any later version.
-FranxAgent is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
-You should have received a copy of the GNU Affero General Public License along with FranxAgent.  If not, see <https://www.gnu.org/licenses/>.
+This file is part of Crystal-Sculpt-Diffus-Coder.
+Crystal-Sculpt-Diffus-Coder is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or any later version.
+Crystal-Sculpt-Diffus-Coder is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+You should have received a copy of the GNU Affero General Public License along with Crystal-Sculpt-Diffus-Coder.  If not, see <https://www.gnu.org/licenses/>.
 -->
 
 <!doctype html>
@@ -14,7 +13,7 @@ You should have received a copy of the GNU Affero General Public License along w
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=yes"
     />
-    <title>FranxAgent</title>
+    <title>Crystal-Sculpt-Diffus-Coder</title>
     <!-- KaTeX online resources -->
     <link
       rel="stylesheet"
@@ -85,16 +84,16 @@ You should have received a copy of the GNU Affero General Public License along w
           <!-- Chat page -->
           <div id="chat-page" class="page">
             <div class="page-header">
-              <h2 data-i18n="chat.header">🤖 FranxAgent</h2>
-            </div>
-            <div id="status-bars" class="status-bars">
-              <div id="project-status-bar" class="project-status-bar" style="display:none">
-                <span id="project-status-indicator" class="project-status-dot"></span>
-                <span id="project-status-text" class="project-status-text"></span>
-              </div>
-              <div id="token-usage-bar" class="token-usage-bar" style="display:none">
-                <span id="token-usage-text" class="token-usage-text"></span>
-              </div>
+              <h2 data-i18n="chat.header">Crystal-Sculpt-Diffus-Coder</h2>
+              <span class="header-status-area">
+                <span id="project-pill" class="project-pill inactive" style="display:none">
+                  <span class="pill-dot"></span>
+                  <span class="pill-phase"></span>
+                  <span class="pill-module"></span>
+                  <span class="pill-project"></span>
+                </span>
+                <span id="token-pill" class="token-pill" style="display:none"></span>
+              </span>
             </div>
             <div id="chat-messages" class="chat-messages"></div>
             <div class="chat-input-area">

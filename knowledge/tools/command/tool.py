@@ -152,7 +152,7 @@ def execute(command: str, **kwargs) -> str:
     # Block deletion operations explicitly as final safety net
     if executable in _FORBIDDEN:
         return (
-            "❌ Error: Deletion commands are prohibited. FranxAgent security rules "
+            "❌ Error: Deletion commands are prohibited. Crystal-Sculpt-Diffus-Coder security rules "
             "do not allow direct deletion of files or folders."
         )
 

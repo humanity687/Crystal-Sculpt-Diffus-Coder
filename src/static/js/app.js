@@ -1,8 +1,7 @@
-// Copyright (C) 2026 humanity687
-// This file is part of FranxAgent.
-// FranxAgent is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or any later version.
-// FranxAgent is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
-// You should have received a copy of the GNU Affero General Public License along with FranxAgent.  If not, see <https://www.gnu.org/licenses/>.
+// This file is part of Crystal-Sculpt-Diffus-Coder.
+// Crystal-Sculpt-Diffus-Coder is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or any later version.
+// Crystal-Sculpt-Diffus-Coder is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+// You should have received a copy of the GNU Affero General Public License along with Crystal-Sculpt-Diffus-Coder.  If not, see <https://www.gnu.org/licenses/>.
 
 const taskMessages = {};
 const eventSource = new EventSource("/events");
@@ -211,10 +210,10 @@ async function loadMessagesFromServer() {
   applyTranslations();
   document.title = t("app.title");
   setSendButtonToSend();
-  const tempToken = localStorage.getItem("FranxAgent_temp_token");
+  const tempToken = localStorage.getItem("Crystal-Sculpt-Diffus-Coder_temp_token");
   if (tempToken) {
     setAuthToken(tempToken);
-    localStorage.removeItem("FranxAgent_temp_token");
+    localStorage.removeItem("Crystal-Sculpt-Diffus-Coder_temp_token");
   }
   const authenticated = await checkAuth();
   if (!authenticated) return;

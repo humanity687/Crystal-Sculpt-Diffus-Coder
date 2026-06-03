@@ -2,20 +2,20 @@
 
 **English** | [中文](docs/zh/CONTRIBUTING.md)
 
-Thank you for your interest in FranxAgent! We welcome all forms of contributions, including new features, tool plugins, **skills**, documentation improvements, bug reports, and more. To ensure smooth collaboration, please follow the processes and standards below.
+Thank you for your interest in Crystal-Sculpt-Diffus-Coder! We welcome all forms of contributions, including new features, tool plugins, **skills**, documentation improvements, bug reports, and more. To ensure smooth collaboration, please follow the processes and standards below.
 
 ---
 
 ## 📦 Tool Contribution (Most Common)
-If you wish to add a new tool to FranxAgent (such as `weather`, `calc`, etc.), please follow these steps:
+If you wish to add a new tool to Crystal-Sculpt-Diffus-Coder (such as `weather`, `calc`, etc.), please follow these steps:
 
 ### 1. Fork the Repository
-- Visit the [FranxAgent Repository](https://github.com/xhdlphzr/FranxAgent) and click **Fork** in the top-right corner to copy the repository to your GitHub account.
+- Visit the [Crystal-Sculpt-Diffus-Coder Repository](https://github.com/xhdlphzr/Crystal-Sculpt-Diffus-Coder) and click **Fork** in the top-right corner to copy the repository to your GitHub account.
 
 ### 2. Clone Your Fork Locally
 ```bash
-git clone https://github.com/xhdlphzr/FranxAgent.git
-cd FranxAgent
+git clone https://github.com/xhdlphzr/Crystal-Sculpt-Diffus-Coder.git
+cd Crystal-Sculpt-Diffus-Coder
 ```
 
 ### 3. Create a New Branch
@@ -71,7 +71,7 @@ Maintainers will review your PR and may suggest changes. You can push further up
 ---
 
 ## 🧠 Skill Contribution
-FranxAgent supports loading extra knowledge, rules, or workflows (Markdown files) via the `knowledge/` folder. You can contribute practical skills to help the AI perform better in specific task domains.
+Crystal-Sculpt-Diffus-Coder supports loading extra knowledge, rules, or workflows (Markdown files) via the `knowledge/` folder. You can contribute practical skills to help the AI perform better in specific task domains.
 
 ### 1. Fork the Repository (Same as Above)
 
@@ -107,7 +107,7 @@ The file should include:
 - Must not contain any content that violates laws, infringes on others’ rights, or is sensitive.
 
 ### 5. Local Verification
-Run FranxAgent locally to confirm the skill loads correctly (the console prints a list of loaded skill files on startup).
+Run Crystal-Sculpt-Diffus-Coder locally to confirm the skill loads correctly (the console prints a list of loaded skill files on startup).
 If the skill content is valid, the AI will exhibit corresponding behavior in conversations.
 
 ### 6. Commit Your Changes
@@ -131,7 +131,7 @@ Maintainers will review the skill for logic, formatting, and completeness. Feedb
 
 ## Adding Translations
 
-FranxAgent uses YAML-based i18n. To add a new language:
+Crystal-Sculpt-Diffus-Coder uses YAML-based i18n. To add a new language:
 
 ### 1. Create a YAML file
 
@@ -208,9 +208,9 @@ GitHub will display both your and your partner’s avatars on the commit.
 
 ## 🔀 Resolving Conflicts
 If your PR has merge conflicts (usually due to branch updates during your submission):
-1. Add the official FranxAgent repository as a remote:
+1. Add the official Crystal-Sculpt-Diffus-Coder repository as a remote:
    ```bash
-   git remote add upstream https://github.com/xhdlphzr/FranxAgent.git
+   git remote add upstream https://github.com/xhdlphzr/Crystal-Sculpt-Diffus-Coder.git
    ```
 2. Fetch the latest code:
    ```bash
@@ -235,6 +235,6 @@ If you are unfamiliar with conflict resolution, leave a comment in the PR and ma
 ---
 
 ## 🎉 Acknowledgments
-Thank you for contributing to FranxAgent! Every line of code and every piece of knowledge makes this project better. If you run into any issues, feel free to ask questions in PRs or Issues.
+Thank you for contributing to Crystal-Sculpt-Diffus-Coder! Every line of code and every piece of knowledge makes this project better. If you run into any issues, feel free to ask questions in PRs or Issues.
 
 Happy coding!

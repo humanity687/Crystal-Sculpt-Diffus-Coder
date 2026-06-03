@@ -1,12 +1,12 @@
 app:
-  title: "FranxAgent"
+  title: "Crystal-Sculpt-Diffus-Coder"
 
 nav:
   chat: "💬 聊天"
   config: "⚙️ 配置"
 
 chat:
-  header: "🤖 FranxAgent"
+  header: "🤖 Crystal-Sculpt-Diffus-Coder"
   placeholder: "输入指令... Ctrl+Enter 发送"
   send: "发送"
   stop: "停止"
@@ -102,11 +102,11 @@ mcp:
   new_server: "新服务器"
 
 login:
-  title: "登录 | FranxAgent"
+  title: "登录 | Crystal-Sculpt-Diffus-Coder"
   password_placeholder: "密码"
   agree: "我已阅读并同意{link}"
   agree_link: "《使用说明和免责声明》"
-  agree_url: "https://github.com/xhdlphzr/FranxAgent/blob/main/docs/zh/README.md"
+  agree_url: "https://github.com/xhdlphzr/Crystal-Sculpt-Diffus-Coder/blob/main/docs/zh/README.md"
   agree_error: "请勾选勾选框"
   submit: "登录"
   no_password: "没有密码？立即设置"
@@ -117,12 +117,12 @@ login:
   network_error: "网络错误"
 
 register:
-  title: "注册 | FranxAgent"
+  title: "注册 | Crystal-Sculpt-Diffus-Coder"
   password_placeholder: "密码"
   confirm_placeholder: "确认密码"
   agree: "我已阅读并同意{link}"
   agree_link: "《使用说明和免责声明》"
-  agree_url: "https://github.com/xhdlphzr/FranxAgent/blob/main/docs/zh/README.md"
+  agree_url: "https://github.com/xhdlphzr/Crystal-Sculpt-Diffus-Coder/blob/main/docs/zh/README.md"
   agree_error: "请勾选勾选框"
   submit: "设置密码"
   has_password: "已有密码？登录"

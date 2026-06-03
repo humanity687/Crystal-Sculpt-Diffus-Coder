@@ -1,12 +1,12 @@
 app:
-  title: "FranxAgent"
+  title: "Crystal-Sculpt-Diffus-Coder"
 
 nav:
   chat: "💬 Chat"
   config: "⚙️ Config"
 
 chat:
-  header: "🤖 FranxAgent"
+  header: "🤖 Crystal-Sculpt-Diffus-Coder"
   placeholder: "Enter your command... Ctrl+Enter to send"
   send: "Send"
   stop: "Stop"
@@ -102,11 +102,11 @@ mcp:
   new_server: "New Server"
 
 login:
-  title: "Login | FranxAgent"
+  title: "Login | Crystal-Sculpt-Diffus-Coder"
   password_placeholder: "Password"
   agree: "I have read and agree to the {link}"
   agree_link: "User Guide and Disclaimer"
-  agree_url: "https://github.com/xhdlphzr/FranxAgent/blob/main/README.md"
+  agree_url: "https://github.com/xhdlphzr/Crystal-Sculpt-Diffus-Coder/blob/main/README.md"
   agree_error: "Please check the checkbox"
   submit: "Login"
   no_password: "No password? Set up now"
@@ -117,12 +117,12 @@ login:
   network_error: "Network error"
 
 register:
-  title: "Register | FranxAgent"
+  title: "Register | Crystal-Sculpt-Diffus-Coder"
   password_placeholder: "Password"
   confirm_placeholder: "Confirm password"
   agree: "I have read and agree to the {link}"
   agree_link: "User Guide and Disclaimer"
-  agree_url: "https://github.com/xhdlphzr/FranxAgent/blob/main/README.md"
+  agree_url: "https://github.com/xhdlphzr/Crystal-Sculpt-Diffus-Coder/blob/main/README.md"
   agree_error: "Please check the checkbox"
   submit: "Set Password"
   has_password: "Already have a password? Login"

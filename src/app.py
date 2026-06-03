@@ -1,8 +1,7 @@
-# Copyright (C) 2026 humanity687
-# This file is part of FranxAgent.
-# FranxAgent is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or any later version.
-# FranxAgent is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
-# You should have received a copy of the GNU Affero General Public License along with FranxAgent.  If not, see <https://www.gnu.org/licenses/>.
+# This file is part of Crystal-Sculpt-Diffus-Coder.
+# Crystal-Sculpt-Diffus-Coder is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or any later version.
+# Crystal-Sculpt-Diffus-Coder is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+# You should have received a copy of the GNU Affero General Public License along with Crystal-Sculpt-Diffus-Coder.  If not, see <https://www.gnu.org/licenses/>.
 
 """
 Flask Application - Assembly, startup, frontend routes
@@ -20,7 +19,7 @@ from pycloudflared import try_cloudflare
 # Add project root for src.* and knowledge imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.agent import FranxAgent
+from src.agent import BaseAgent
 from src.state import load_config, save_config
 from knowledge.crystals import CrystalStore
 from src.routes.auth import auth_bp
@@ -98,7 +97,7 @@ def init_agents():
     else:
         print("[CrystalStore] Initialized — empty, ready for engineering memory")
 
-    state.chat_agent = FranxAgent(
+    state.chat_agent = BaseAgent(
         key=config["api_key"],
         url=config["base_url"],
         model=config["model"],
@@ -111,7 +110,7 @@ def init_agents():
         crystal_observer=crystal_observer,
     )
 
-    state.tasks_agent = FranxAgent(
+    state.tasks_agent = BaseAgent(
         key=config["api_key"],
         url=config["base_url"],
         model=config["model"],
