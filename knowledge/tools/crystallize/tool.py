@@ -43,7 +43,7 @@ FINDABLE_TYPES = sorted(VALID_CRYSTAL_TYPES | {"ExperienceCrystal"})
 
 
 def _format_crystal_summary(c: dict, index: int | None = None) -> str:
-    """Format a single crystal dict as a compact summary line."""
+    """Format a single crystal dict as a compact summary line with recall_id."""
     prefix = f"{index}. " if index is not None else ""
     cid = c.get("id", "?")
     ctype = c.get("crystal_type", "?")
@@ -53,6 +53,9 @@ def _format_crystal_summary(c: dict, index: int | None = None) -> str:
     layer = c.get("layer", "")
     vitality = c.get("vitality", 0)
     score = c.get("_score")
+
+    # Build recall_id for use with recall(crystal_id="...")
+    recall_id = f"{ctype}:{proj}:{mod}.{name}:v1.0"
 
     parts = [f"{prefix}`{ctype}`"]
     if proj:
@@ -66,8 +69,59 @@ def _format_crystal_summary(c: dict, index: int | None = None) -> str:
     parts.append(f"vitality={vitality}")
     if score is not None:
         parts.append(f"score={score:.4f}")
-    parts.append(f"id={cid}")
+    parts.append(f"recall_id={recall_id}")
     return " | ".join(parts)
+
+
+# Layer to module_progress field mapping
+LAYER_TO_PROGRESS_FIELD = {
+    "L1": "l1_done_at",
+    "L2": "l2_done_at",
+    "L3": "l3_done_at",
+    "L3.1": "l3_1_done_at",
+    "L4": "l4_done_at",
+    "L5": "l5_done_at",
+    "L6": "l6_done_at",
+    "L7": "l7_done_at",
+}
+
+
+def _update_module_progress_from_crystal(project_id: str, module: str,
+                                          crystal_type: str, phase: str) -> None:
+    """Update module_progress table based on crystal creation."""
+    from src import state
+    if not state.journal:
+        return
+
+    if crystal_type == "TraceCrystal":
+        state.journal.increment_l8_incidents(project_id, module)
+        return
+
+    if crystal_type == "ImplCrystal":
+        state.journal.upsert_module_progress(
+            project_id, module,
+            phase_field="l7_done_at",
+            status="completed",
+            current_phase="L7",
+        )
+        state.journal.update_project_module_counts(project_id)
+        return
+
+    if crystal_type == "ModMap":
+        state.journal.upsert_module_progress(
+            project_id, module,
+            phase_field="l2_done_at",
+            current_phase="L3",
+        )
+        return
+
+    phase_field = LAYER_TO_PROGRESS_FIELD.get(phase)
+    if phase_field:
+        state.journal.upsert_module_progress(
+            project_id, module,
+            phase_field=phase_field,
+            current_phase=phase,
+        )
 
 
 def _run_store(active: dict, crystal_type: str, module: str,
@@ -128,6 +182,27 @@ def _run_store(active: dict, crystal_type: str, module: str,
             name=name.strip(),
             content=content_dict,
         )
+
+        # Record crystal_create event and update module progress
+        if state.journal:
+            content_preview = str(content_dict)[:300]
+            state.journal.record_event(
+                "crystal_create",
+                project_id=active["project_id"],
+                phase=active["phase"],
+                module=module.strip(),
+                data={
+                    "crystal_id": crystal_id,
+                    "crystal_type": crystal_type,
+                    "name": name.strip(),
+                    "content_summary": content_preview,
+                },
+            )
+            # Update module progress based on crystal type and layer
+            _update_module_progress_from_crystal(
+                active["project_id"], module.strip(),
+                crystal_type, active["phase"],
+            )
 
         # ExperienceCrystal: mark persistent and embed for cross-project search
         if crystal_type == "ExperienceCrystal":
@@ -207,8 +282,10 @@ def _run_find(active: dict | None, crystal_type: str = "",
         results = results[:limit]
 
         if not results:
-            return f"No crystals found matching query '{q}'."
-        lines = [f"Vector search results for '{q}' ({len(results)} found):"]
+            return f"No crystals found matching query '{q}'.\n\n💡 Tip: Use crystallize(command=\"find\", crystal_type=\"...\", module=\"...\") without query for a structured listing."
+        lines = [f"Vector search results for '{q}' ({len(results)} found):",
+                  "Use recall(crystal_id=\"<recall_id>\") to view the full crystal content.",
+                  ""]
         for i, c in enumerate(results, 1):
             lines.append(_format_crystal_summary(c, i))
         return "\n".join(lines)
@@ -234,10 +311,41 @@ def _run_find(active: dict | None, crystal_type: str = "",
             filters.append(f"layer={lyr}")
         return f"No crystals found ({', '.join(filters)})."
 
-    lines = [f"Found {len(results)} crystals:"]
+    lines = [f"Found {len(results)} crystals:",
+              "Use recall(crystal_id=\"<recall_id>\") to view the full crystal content.",
+              ""]
     for i, c in enumerate(results, 1):
         lines.append(_format_crystal_summary(c, i))
     return "\n".join(lines)
+
+
+schema = {
+    "type": "function",
+    "function": {
+        "name": "crystallize",
+        "description": (
+            "Crystal management tool. Two commands: "
+            "'store' (default): store a thought crystal in CrystalStore. "
+            "Takes crystal_type (ArchCrystal, ModMap, ContractCrystal, LogicCrystal, SkeletonCrystal, "
+            "ImplCrystal, TraceCrystal, ExperienceCrystal, ModuleRecord), module, name, and content (JSON string). "
+            "'find': search for existing crystals by crystal_type, module, layer, or query (vector similarity)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "enum": ["store", "find"], "description": "Command: 'store' (default) or 'find'."},
+                "crystal_type": {"type": "string", "description": "Crystal type. Required for store. For find: filter by type."},
+                "module": {"type": "string", "description": "Module name for the crystal."},
+                "name": {"type": "string", "description": "Human-readable name for the crystal."},
+                "content": {"type": "string", "description": "Crystal content as a JSON string. Required for store."},
+                "query": {"type": "string", "description": "For 'find': free-text search query for vector similarity."},
+                "layer": {"type": "string", "description": "For 'find': filter by layer (L0-L8, L3.1)."},
+                "limit": {"type": "integer", "description": "For 'find': maximum results. Default: 20."},
+            },
+            "required": [],
+        },
+    },
+}
 
 
 def execute(command: str = "store",

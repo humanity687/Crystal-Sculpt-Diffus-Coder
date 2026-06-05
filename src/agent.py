@@ -11,6 +11,7 @@ Provides the Crystal-Sculpt-Diffus-Coder class, responsible for interacting with
 import os
 import json
 import sys
+import time
 import atexit
 import uuid
 import threading
@@ -34,46 +35,17 @@ Example: before your first `write` call, do `recall(memory_id="tool:write")`. Be
 
 ## 📌 Tool Calling Convention
 
-**Important: You can only use a tool named `tools`.** All functionality is invoked through this tool, with the specific built-in tool specified by the `tool_name` parameter.
+Each tool is a first-class function with its own parameter schema. Call tools directly by name — the system automatically provides the correct JSON Schema for each tool's parameters.
 
-When you decide to use a tool, return the `tools` tool in the standard function-calling format. For example, to get the current time, you should return:
-
-```json
-{
-    "tool_calls": [{
-        "id": "call_unique_id",
-        "type": "function",
-        "function": {
-            "name": "tools",
-            "arguments": "{\"tool_name\": \"time\", \"arguments\": {}}"
-        }
-    }]
-}
-```
-
-For tools that require parameters, `arguments` must be a JSON object containing all required fields. For example, to read a file:
-
-```json
-{
-    "tool_calls": [{
-        "id": "call_abc123",
-        "type": "function",
-        "function": {
-            "name": "tools",
-            "arguments": "{\"tool_name\": \"read\", \"arguments\": {\"path\": \"/path/to/file.py\"}}"
-        }
-    }]
-}
-```
+For example, to get the current time, call `time()` with no arguments. To read a file, call `read(path="/path/to/file.py")`. The model's native function-calling mechanism handles parameter validation automatically.
 
 ---
 
 ## 🧠 Tool Usage Principles
 - **Least privilege**: Only use the tools necessary to complete the task; do not misuse `command` for file operations (use `read`/`write` instead).
 - **Accurate calling**: Ensure parameters are correct. The `path` parameter always uses forward slashes, even on Windows.
-- **Error handling**: If a tool returns an error mentioning an unexpected keyword argument, you likely used the wrong parameter name — `recall` the tool docs and check.
+- **Error handling**: If a tool returns an error, check the error message and adjust your call accordingly. Use `recall` to fetch full tool documentation if needed.
 - **User intent first**: Always choose tools and operations based on the user's request.
-- **Do not directly use `time`, `read`, etc. as tool names; they must be called through the `tools` tool.**
 - **Use tools, not skills**: Any heading marked with "skill" is not a tool you can call; it is content you should learn.
 
 ---
@@ -93,6 +65,7 @@ For tools that require parameters, `arguments` must be a JSON object containing 
 | `set_project` | `tool:set_project` | Activate the crystal-aware engineering workflow (phases L0-L8, module tracking). |
 | `crystallize` | `tool:crystallize` | Store thought crystals (contracts, traces, experience) or find existing ones by type/module/query. |
 | `dependency` | `tool:dependency` | Manage the dependency graph: define modules+dependencies, analyze, recommend next, compute impact. |
+| `review_approval` | `tool:review_approval` | LLM-powered review with 4 modes: general review, contract consistency check, single-step critique, iteration drift detection (L3→L7). |
 
 ---
 
@@ -779,7 +752,7 @@ class BaseAgent:
                     content = lc.get("content", {}) if isinstance(lc.get("content"), dict) else {}
                     steps = content.get("algorithm_steps", [])
                     # Normalize: steps may be list[str] or list[dict]
-                    if steps and isinstance(steps[0], dict):
+                    if isinstance(steps, list) and steps and isinstance(steps[0], dict):
                         steps = [s.get("step", s.get("description", str(s))) for s in steps]
                     steps_preview = "; ".join(steps[:3]) if steps else "N/A"
                     results.append(
@@ -820,7 +793,7 @@ class BaseAgent:
             for lc in (logics or [])[:self.crystal_k]:
                 content = lc.get("content", {}) if isinstance(lc.get("content"), dict) else {}
                 steps = content.get("algorithm_steps", [])
-                if steps and isinstance(steps[0], dict):
+                if isinstance(steps, list) and steps and isinstance(steps[0], dict):
                     steps = [s.get("step", s.get("description", str(s))) for s in steps]
                 steps_preview = "; ".join(steps[:3]) if steps else "N/A"
                 results.append(
@@ -1119,7 +1092,10 @@ class BaseAgent:
 
                 # 0.5 Module switch compression — fires when set_project changes
                 #     module within the same project (e.g. Auth→API after L7 done).
-                if state.module_switch_notice:
+                #     Skip at L3/L3.1: switching modules during contract-first
+                #     negotiation keeps all contract history as cross-module context.
+                if (state.module_switch_notice
+                        and state.module_switch_notice.get("phase", "") not in ("L3", "L3.1")):
                     switch = state.module_switch_notice
                     print(
                         f"[ModuleSwitch] Proactive compression triggered: "
@@ -1368,60 +1344,9 @@ class BaseAgent:
                                 if arguments is None:
                                     arguments = {}
 
-                                # Undo double JSON-encoding: when the model wraps
-                                # the inner arguments as a JSON string instead of
-                                # a JSON object, e.g. arguments="{\"path\": ...}"
-                                if isinstance(arguments.get("arguments"), str):
-                                    try:
-                                        arguments["arguments"] = json.loads(
-                                            arguments["arguments"]
-                                        )
-                                    except json.JSONDecodeError:
-                                        try:
-                                            import ast
-                                            arguments["arguments"] = ast.literal_eval(
-                                                arguments["arguments"]
-                                            )
-                                        except (ValueError, SyntaxError):
-                                            pass
-
-                                # Fix model's common typo: "tool" (singular) → "tools"
-                                if func_name == "tool":
-                                    func_name = "tools"
-                                    tool_call["function"]["name"] = "tools"
-
-                                # If the model directly called a built-in tool name (e.g., time, read), automatically convert to tools call
-                                if func_name != "tools" and "/" not in func_name:
-                                    # Construct new arguments: tool_name is the original function name, arguments are the original parameters
-                                    new_arguments = {
-                                        "tool_name": func_name,
-                                        "arguments": arguments,
-                                    }
-                                    # Update tool_call object
-                                    tool_call["function"]["name"] = "tools"
-                                    tool_call["function"]["arguments"] = json.dumps(
-                                        new_arguments, ensure_ascii=False
-                                    )
-                                    func_name = "tools"
-                                    arguments = new_arguments
-
-                                # Determine the actual tool name
-                                actual_tool_name = None
-                                if func_name == "tools":
-                                    # Extract tool_name from arguments (when wrapped)
-                                    actual_tool_name = arguments.get("tool_name")
-                                    # Fallback: model sometimes nests tool_name inside
-                                    # the inner arguments dict instead of at top level
-                                    if not actual_tool_name and isinstance(
-                                        arguments.get("arguments"), dict
-                                    ):
-                                        actual_tool_name = arguments["arguments"].pop(
-                                            "tool_name", None
-                                        )
-                                        if actual_tool_name:
-                                            arguments["tool_name"] = actual_tool_name
-                                else:
-                                    actual_tool_name = func_name
+                                # Determine the actual tool name — func_name IS the tool name
+                                # since each tool is now a first-class function.
+                                actual_tool_name = func_name
 
                                 # 1. Send tool_call event first (shows "Using xxx...")
                                 call_id = tool_call["id"]
@@ -1433,12 +1358,27 @@ class BaseAgent:
                                     "result": None,  # No result yet
                                 }
 
+                                # Record tool_call event in development journal
+                                _start_time = time.time()
+                                if state.journal:
+                                    proj = state.active_project
+                                    state.journal.record_event(
+                                        "tool_call",
+                                        project_id=proj.get("project_id") if proj else None,
+                                        phase=proj.get("phase") if proj else None,
+                                        module=proj.get("module") if proj else None,
+                                        data={
+                                            "tool_name": actual_tool_name,
+                                            "arguments": arguments,
+                                            "call_id": call_id,
+                                        },
+                                    )
+
                                 result = None
                                 # 2. Handle tool execution based on type
                                 if actual_tool_name == "command":
                                     # Extract command string and classify risk level
-                                    inner = arguments.get("arguments", {}) if isinstance(arguments.get("arguments"), dict) else {}
-                                    cmd_str = inner.get("command", "")
+                                    cmd_str = arguments.get("command", "")
                                     from knowledge.tools.command import classify_command
                                     risk = classify_command(cmd_str) if cmd_str else "dangerous"
 
@@ -1473,8 +1413,36 @@ class BaseAgent:
                                                 result = func(**arguments)
                                             else:
                                                 result = f"Error: unknown tool {func_name}"
+                                            if state.journal:
+                                                proj = state.active_project
+                                                state.journal.record_event(
+                                                    "approval",
+                                                    project_id=proj.get("project_id") if proj else None,
+                                                    phase=proj.get("phase") if proj else None,
+                                                    module=proj.get("module") if proj else None,
+                                                    data={
+                                                        "approval_type": "confirmation_required",
+                                                        "tool_name": actual_tool_name,
+                                                        "decision": "approved",
+                                                        "confirm_id": confirm_id,
+                                                    },
+                                                )
                                         else:
                                             result = f"Tool '{actual_tool_name}' execution was rejected by the user."
+                                            if state.journal:
+                                                proj = state.active_project
+                                                state.journal.record_event(
+                                                    "approval",
+                                                    project_id=proj.get("project_id") if proj else None,
+                                                    phase=proj.get("phase") if proj else None,
+                                                    module=proj.get("module") if proj else None,
+                                                    data={
+                                                        "approval_type": "confirmation_required",
+                                                        "tool_name": actual_tool_name,
+                                                        "decision": "rejected",
+                                                        "confirm_id": confirm_id,
+                                                    },
+                                                )
                                 elif actual_tool_name == "write":
                                     # Write tools use proposal-review-overwrite mode.
                                     # The tool returns a string split by ---FILE_CONTENT---:
@@ -1507,14 +1475,57 @@ class BaseAgent:
                                         if result is True or isinstance(result, str):
                                             # True = simple approval; str = user-edited final content
                                             result = agent_result
+                                            if state.journal:
+                                                proj = state.active_project
+                                                state.journal.record_event(
+                                                    "approval",
+                                                    project_id=proj.get("project_id") if proj else None,
+                                                    phase=proj.get("phase") if proj else None,
+                                                    module=proj.get("module") if proj else None,
+                                                    data={
+                                                        "approval_type": "write_proposal",
+                                                        "tool_name": actual_tool_name,
+                                                        "decision": "approved",
+                                                        "confirm_id": confirm_id,
+                                                    },
+                                                )
                                         elif not result or result is False:
                                             result = f"Tool '{actual_tool_name}' proposal was rejected by the user."
+                                            if state.journal:
+                                                proj = state.active_project
+                                                state.journal.record_event(
+                                                    "approval",
+                                                    project_id=proj.get("project_id") if proj else None,
+                                                    phase=proj.get("phase") if proj else None,
+                                                    module=proj.get("module") if proj else None,
+                                                    data={
+                                                        "approval_type": "write_proposal",
+                                                        "tool_name": actual_tool_name,
+                                                        "decision": "rejected",
+                                                        "confirm_id": confirm_id,
+                                                    },
+                                                )
                                         elif isinstance(result, dict) and not result.get("approved", True):
                                             reason = result.get("reason", "")
                                             result = (
                                                 f"Tool '{actual_tool_name}' proposal was rejected by the user."
                                                 + (f" User feedback: {reason}" if reason else "")
                                             )
+                                            if state.journal:
+                                                proj = state.active_project
+                                                state.journal.record_event(
+                                                    "approval",
+                                                    project_id=proj.get("project_id") if proj else None,
+                                                    phase=proj.get("phase") if proj else None,
+                                                    module=proj.get("module") if proj else None,
+                                                    data={
+                                                        "approval_type": "write_proposal",
+                                                        "tool_name": actual_tool_name,
+                                                        "decision": "rejected",
+                                                        "user_feedback": reason,
+                                                        "confirm_id": confirm_id,
+                                                    },
+                                                )
                                 elif actual_tool_name == "request_approval":
                                     # Atomically store ModuleRecord snapshot AND present
                                     # content to user for approval.  This replaces the
@@ -1522,8 +1533,7 @@ class BaseAgent:
                                     # auto-captured "most recent assistant message".
                                     import json as _json
 
-                                    # arguments = {tool_name, arguments: {phase, module, ...}}
-                                    inner = arguments.get("arguments", {}) if isinstance(arguments.get("arguments"), dict) else {}
+                                    # arguments = {phase, module, content, files, summary}
 
                                     # Store the snapshot immediately
                                     func = self.tool_functions.get(func_name)
@@ -1553,7 +1563,7 @@ class BaseAgent:
                                             "content": result_data.get("content", ""),
                                             "files": result_data.get("files", []),
                                             "file_contents": result_data.get("file_contents", {}),
-                                            "summary": inner.get("summary", ""),
+                                            "summary": arguments.get("summary", ""),
                                             "crystal_id": result_data.get("crystal_id", ""),
                                         }
                                         if approved:
@@ -1567,6 +1577,20 @@ class BaseAgent:
                                                     f"final crystal product."
                                                 )
                                                 restart = True
+                                                if state.journal:
+                                                    proj = state.active_project
+                                                    state.journal.record_event(
+                                                        "approval",
+                                                        project_id=proj.get("project_id") if proj else None,
+                                                        phase=result_data.get("phase"),
+                                                        module=result_data.get("module"),
+                                                        data={
+                                                            "approval_type": "approval_required",
+                                                            "tool_name": actual_tool_name,
+                                                            "decision": "approved",
+                                                            "confirm_id": confirm_id,
+                                                        },
+                                                    )
                                                 print(
                                                     f"[Restart] request_approval approved "
                                                     f"(phase={result_data.get('phase', '')}, "
@@ -1584,6 +1608,21 @@ class BaseAgent:
                                                     f"for module '{result_data.get('module', '')}' "
                                                     f"and call request_approval again."
                                                 )
+                                                if state.journal:
+                                                    proj = state.active_project
+                                                    state.journal.record_event(
+                                                        "approval",
+                                                        project_id=proj.get("project_id") if proj else None,
+                                                        phase=result_data.get("phase"),
+                                                        module=result_data.get("module"),
+                                                        data={
+                                                            "approval_type": "approval_required",
+                                                            "tool_name": actual_tool_name,
+                                                            "decision": "rejected",
+                                                            "user_feedback": reason,
+                                                            "confirm_id": confirm_id,
+                                                        },
+                                                    )
                                         else:
                                             result = (
                                                 f"Rejected. The snapshot was stored but "
@@ -1592,6 +1631,20 @@ class BaseAgent:
                                                 f"for module '{result_data.get('module', '')}' "
                                                 f"and call request_approval again."
                                             )
+                                            if state.journal:
+                                                proj = state.active_project
+                                                state.journal.record_event(
+                                                    "approval",
+                                                    project_id=proj.get("project_id") if proj else None,
+                                                    phase=result_data.get("phase"),
+                                                    module=result_data.get("module"),
+                                                    data={
+                                                        "approval_type": "approval_required",
+                                                        "tool_name": actual_tool_name,
+                                                        "decision": "rejected",
+                                                        "confirm_id": confirm_id,
+                                                    },
+                                                )
                                     else:
                                         result = result_str
                                 else:
@@ -1611,12 +1664,31 @@ class BaseAgent:
                                     else "No result",
                                 }
 
+                                # Record tool_result event in development journal
+                                if state.journal:
+                                    duration_ms = int((time.time() - _start_time) * 1000)
+                                    proj = state.active_project
+                                    result_str = str(result) if result is not None else ""
+                                    state.journal.record_event(
+                                        "tool_result",
+                                        project_id=proj.get("project_id") if proj else None,
+                                        phase=proj.get("phase") if proj else None,
+                                        module=proj.get("module") if proj else None,
+                                        data={
+                                            "tool_name": actual_tool_name,
+                                            "call_id": call_id,
+                                            "success": "Error" not in result_str,
+                                            "result_summary": result_str[:500] if result_str else "",
+                                            "duration_ms": duration_ms,
+                                        },
+                                    )
+
                                 # 4.5 set_project: exit the generator so the user can inject
                                 #     the next prompt with fresh phase/crystal state.
                                 #     (Do NOT restart — that would waste an API call in
                                 #      a context the user hasn't had a chance to shape.)
                                 if actual_tool_name == "set_project" and result and "Error" not in str(result):
-                                    action = arguments.get("arguments", {}).get("action", "activate")
+                                    action = arguments.get("action", "activate")
 
                                     if action == "activate" and state.active_project:
                                         _should_exit = True
@@ -1648,6 +1720,23 @@ class BaseAgent:
                                 error_content = (
                                     f"Tool execution error: {type(e).__name__}: {str(e)}"
                                 )
+                                # Record error event in development journal
+                                if state.journal:
+                                    import traceback as _tb
+                                    proj = state.active_project
+                                    _err_tool_name = locals().get('actual_tool_name', 'unknown')
+                                    state.journal.record_event(
+                                        "error",
+                                        project_id=proj.get("project_id") if proj else None,
+                                        phase=proj.get("phase") if proj else None,
+                                        module=proj.get("module") if proj else None,
+                                        data={
+                                            "error_type": type(e).__name__,
+                                            "error_message": str(e)[:500],
+                                            "context": f"tool:{_err_tool_name}",
+                                            "traceback": _tb.format_exc()[:1000],
+                                        },
+                                    )
                                 # Try to get call_id if available, otherwise use fallback
                                 call_id = tool_call.get("id", "unknown")
                                 yield {
@@ -1689,9 +1778,9 @@ class BaseAgent:
                                             tc_args = json.loads(tc["function"]["arguments"])
                                         except (json.JSONDecodeError, KeyError):
                                             continue
-                                        if (tc_args.get("tool_name") == "crystallize"
-                                                and tc_args.get("arguments", {}).get("crystal_type") == "ImplCrystal"):
-                                            module_name = tc_args.get("arguments", {}).get("module")
+                                        if (tc["function"]["name"] == "crystallize"
+                                                and tc_args.get("crystal_type") == "ImplCrystal"):
+                                            module_name = tc_args.get("module")
                                             project_id = state.active_project.get("project_id")
                                             if project_id and module_name:
                                                 self._mark_module_pending_completion(project_id, module_name)

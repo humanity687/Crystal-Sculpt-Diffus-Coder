@@ -77,6 +77,26 @@ def init_agents():
     crystal_path = config.get("crystal_db_path", "./crystals.db")
     state.crystal_store = CrystalStore(crystal_path)
 
+    # Initialize DevelopmentJournal for toolchain data persistence
+    from knowledge.journal import DevelopmentJournal
+    journal_path = config.get("journal_db_path", "./journal.db")
+    state.journal = DevelopmentJournal(journal_path)
+
+    # Restore active project state from previous session
+    saved_state = state.journal.load_project_state()
+    if saved_state:
+        state.active_project = {
+            "project_id": saved_state["project_id"],
+            "phase": saved_state["phase"],
+            "module": saved_state.get("module"),
+        }
+        state.phase_guidance = saved_state.get("phase_guidance", "")
+        mod_info = f", module={saved_state['module']}" if saved_state.get("module") else ""
+        print(
+            f"[Journal] Restored project state: project_id={saved_state['project_id']}, "
+            f"phase={saved_state['phase']}{mod_info}"
+        )
+
     # Initialize CrystalObserver for automatic crystal extraction
     from knowledge.crystal_observer import CrystalObserver
 

@@ -21,6 +21,9 @@ _config_lock = threading.Lock()
 # CrystalStore instance (shared between chat_agent and tasks_agent)
 crystal_store = None
 
+# DevelopmentJournal instance (shared between chat_agent and tasks_agent)
+journal = None
+
 # Tool confirmation state (shared between /chat and /api/confirm_tool)
 pending_confirmations = {}
 pending_lock = threading.Lock()

@@ -31,6 +31,34 @@ from knowledge.dependency import (
     generate_mermaid,
 )
 
+schema = {
+    "type": "function",
+    "function": {
+        "name": "dependency",
+        "description": (
+            "Dependency graph management with five sub-commands: "
+            "'define': declare modules + dependencies directly (primary, call after L2 approval). "
+            "'analyze': build graph from ModMap crystals (fallback). "
+            "'recommend': list modules ready for implementation given completed list. "
+            "'mark_done': mark a module as implemented after L7 approval. "
+            "'impact': BFS downstream — given a changed module, list all affected downstream modules."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "enum": ["define", "analyze", "recommend", "mark_done", "impact"], "description": "Sub-command to execute."},
+                "project_id": {"type": "string", "description": "The project identifier (required)."},
+                "modules": {"type": "array", "items": {"type": "string"}, "description": "For 'define': list of module names."},
+                "dependencies": {"type": "object", "description": "For 'define': dict mapping module name → list of dependency module names."},
+                "completed": {"type": "array", "items": {"type": "string"}, "description": "For 'recommend': list of completed module names (auto-derived from module_status when omitted)."},
+                "module": {"type": "string", "description": "For 'mark_done' and 'impact': the target module name."},
+            },
+            "required": ["command", "project_id"],
+        },
+    },
+}
+
+
 
 def execute(command: str, project_id: str, **kwargs) -> str:
     """
@@ -214,6 +242,17 @@ def _do_define(
     except Exception as e:
         return f"Error storing DependencyGraphCrystal: {e}"
 
+    # Update module progress: L2 done and initialize module rows
+    if state.journal:
+        for mod_name in graph:
+            state.journal.upsert_module_progress(
+                project_id, mod_name,
+                phase_field="l2_done_at",
+                current_phase="L3",
+                status="active",
+            )
+        state.journal.update_project_module_counts(project_id)
+
     return _format_analyze_report(project_id, graph, cycles, order, module_status, mermaid, cid)
 
 
@@ -274,6 +313,17 @@ def _do_analyze(
         )
     except Exception as e:
         return f"Error storing DependencyGraphCrystal: {e}"
+
+    # Update module progress for all modules
+    if state.journal:
+        for mod_name in graph:
+            state.journal.upsert_module_progress(
+                project_id, mod_name,
+                phase_field="l2_done_at",
+                current_phase="L3",
+                status="active",
+            )
+        state.journal.update_project_module_counts(project_id)
 
     return _format_analyze_report(project_id, graph, cycles, order, module_status, mermaid, cid)
 
@@ -447,6 +497,16 @@ def _do_mark_done(project_id: str, module: str) -> str:
         )
     except Exception as e:
         return f"Error storing updated DependencyGraphCrystal: {e}"
+
+    # Update module progress for the completed module
+    if state.journal:
+        state.journal.upsert_module_progress(
+            project_id, module,
+            phase_field="l7_done_at",
+            status="completed",
+            current_phase="L7",
+        )
+        state.journal.update_project_module_counts(project_id)
 
     # Format report
     lines = [

@@ -3,6 +3,30 @@
 # Crystal-Sculpt-Diffus-Coder is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License along with Crystal-Sculpt-Diffus-Coder.  If not, see <https://www.gnu.org/licenses/>.
 
+schema = {
+    "type": "function",
+    "function": {
+        "name": "set_project",
+        "description": (
+            "Manage the crystal-aware engineering context. "
+            "'activate': enter project mode with phase-aware crystal injection. "
+            "'deactivate': exit project mode. "
+            "Activates CrystalObserver auto-extraction and phase guidance in subsequent turns."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["activate", "deactivate"], "description": "Action: 'activate' or 'deactivate'. Default: 'activate'."},
+                "project_id": {"type": "string", "description": "Unique project identifier (required for activate)."},
+                "phase": {"type": "string", "description": "Current workflow phase: L0, L1, L2, L3, L3.1, L4, L5, L6, L7, L8 (required for activate)."},
+                "module": {"type": "string", "description": "Current module name (optional for activate)."},
+            },
+            "required": [],
+        },
+    },
+}
+
+
 def execute(action: str = "activate", project_id: str = "", phase: str = "",
             module: str = "") -> str:
     """
@@ -58,6 +82,8 @@ def execute(action: str = "activate", project_id: str = "", phase: str = "",
         state.phase_guidance = None
         state.phase_rollback_notice = None
         state.module_switch_notice = None
+        if state.journal:
+            state.journal.clear_project_state()
         return (
             f"Project mode deactivated. Was: project_id={prev_project}, phase={prev_phase}. "
             f"Crystal context injection and CrystalObserver auto-extraction are now stopped. "
@@ -139,6 +165,28 @@ def execute(action: str = "activate", project_id: str = "", phase: str = "",
     # Auto-inject phase-specific constraints from skill
     guidance = get_phase_context(new_phase)
     state.phase_guidance = guidance
+
+    # ── Persist project state and record events ─────────────────────────
+    if state.journal:
+        state.journal.save_project_state(
+            project_id_str, new_phase, new_module, guidance or ""
+        )
+        state.journal.register_project(project_id_str)
+        if state.phase_transition_notice:
+            state.journal.record_event(
+                "phase_transition", project_id_str, new_phase, new_module,
+                {"from_phase": old_phase, "to_phase": new_phase},
+            )
+        if state.phase_rollback_notice:
+            state.journal.record_event(
+                "phase_rollback", project_id_str, new_phase, new_module,
+                {"from_phase": old_phase, "to_phase": new_phase},
+            )
+        if state.module_switch_notice:
+            state.journal.record_event(
+                "module_switch", project_id_str, new_phase, new_module,
+                {"old_module": old_module, "new_module": new_module},
+            )
 
     mod_info = f", module={module}" if module else ""
     guidance_info = f", +{len(guidance)} chars phase guidance" if guidance else ""
