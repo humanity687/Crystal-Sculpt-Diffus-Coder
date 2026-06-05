@@ -34,7 +34,7 @@ You should have received a copy of the GNU Affero General Public License along w
 |----------|----------|
 | File ops | `ls`, `dir`, `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `grep`, `find`, `pwd`, `mkdir`, `touch`, `mv`, `cp`, `chmod`, `chown` |
 | System | `echo`, `whoami`, `date`, `time`, `env` |
-| Languages | `python`, `python3`, `python3-m`, `pip`, `pip3`, `node`, `npm`, `npx`, `go`, `rustc`, `cargo`, `java`, `javac` |
+| Languages | `python`, `python3`, `pip`, `pip3`, `node`, `npm`, `npx`, `go`, `rustc`, `cargo`, `java`, `javac` |
 | VCS | `git` |
 | Network | `curl`, `wget` |
 | Archives | `tar`, `gzip`, `gunzip`, `zip`, `unzip` |
@@ -45,3 +45,4 @@ Commands NOT in this list will be rejected with an error listing all permitted c
 - `cd` does not work as expected (subprocess exits immediately after changing directory). Use absolute paths instead.
 - Package managers (`apt`, `brew`, etc.) are not in the permitted list — use language-specific package managers (`pip`, `npm`, `cargo`) instead.
 - `chmod` and `chown` are permitted but require confirmation with a warning.
+- Shell operators (`>`, `>>`, `|`, `&&`, `||`, `;`, `<`, `&`) are detected and blocked. Run one command at a time, or use a script file for complex operations.

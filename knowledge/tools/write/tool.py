@@ -53,9 +53,54 @@ def _format_result(agent_part: str, full_content: str) -> str:
     return agent_part + "\n\n---FILE_CONTENT---\n" + full_content
 
 
+def _code_structure(code: str, path: str) -> str | None:
+    """Parse code structure via tree-sitter (same as read tool).
+
+    Supports Python, JavaScript, TypeScript, Go, Rust, Java, C, C++, C#,
+    HTML, CSS.  Returns a tree-sitter skeleton or None for unsupported types.
+    """
+    try:
+        from knowledge.tools.read import _parse_structure
+        return _parse_structure(Path(path), code)
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 #  execute
 # ---------------------------------------------------------------------------
+
+schema = {
+    "type": "function",
+    "function": {
+        "name": "write",
+        "description": (
+            "Propose a file modification. Does NOT write to disk — the proposal is shown "
+            "to the user for review in a side-by-side diff panel. Four modes: "
+            "'overwrite' (create/replace file, needs content), "
+            "'edit' (delete line range then insert, needs start_line/end_line/new_content), "
+            "'replace' (find old_string and replace with new_string, uses expected_replacements as safety guard), "
+            "'insert' (insert new_content after after_line, 0=file start)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute file path to write to."},
+                "mode": {"type": "string", "enum": ["overwrite", "edit", "replace", "insert"], "description": "Edit mode. Default: 'overwrite'."},
+                "content": {"type": "string", "description": "For 'overwrite' mode: complete new file content."},
+                "start_line": {"type": "integer", "description": "For 'edit' mode: first line to delete (1-based, inclusive)."},
+                "end_line": {"type": "integer", "description": "For 'edit' mode: last line to delete (1-based, inclusive)."},
+                "new_content": {"type": "string", "description": "For 'edit' or 'insert' mode: content to insert."},
+                "old_string": {"type": "string", "description": "For 'replace' mode: exact string to find and replace."},
+                "new_string": {"type": "string", "description": "For 'replace' mode: replacement string."},
+                "expected_replacements": {"type": "integer", "description": "For 'replace' mode: expected match count (safety guard). Default: 1."},
+                "after_line": {"type": "integer", "description": "For 'insert' mode: line number to insert after (0 = beginning of file)."},
+            },
+            "required": ["path"],
+        },
+    },
+}
+
 
 def execute(
     path: str,
@@ -115,6 +160,11 @@ def execute(
             new_lines = content.count("\n") + (0 if content.endswith("\n") else 1)
             new_bytes = len(content.encode("utf-8"))
             agent_part = f"New file: {new_lines} lines, {new_bytes} bytes"
+
+        # Append code structure summary (tree-sitter, multi-language)
+        structure = _code_structure(content, path)
+        if structure:
+            agent_part += f"\n\n```structure\n{structure}\n```"
 
         return _format_result(agent_part, content)
 

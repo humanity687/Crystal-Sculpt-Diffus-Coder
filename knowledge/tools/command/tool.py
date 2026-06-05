@@ -114,6 +114,28 @@ def classify_command(command: str) -> str:
     return "dangerous"
 
 
+schema = {
+    "type": "function",
+    "function": {
+        "name": "command",
+        "description": (
+            "Execute a system command with whitelist-based security. "
+            "Read-only commands (ls, cat, git log, etc.) run directly. "
+            "State-modifying commands (mkdir, touch, mv, pip install, etc.) require user confirmation. "
+            "Deletion commands (rm, del) are forbidden. "
+            "Shell operators (&&, |, >, <) are not supported — run one command at a time."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The shell command to execute."},
+            },
+            "required": ["command"],
+        },
+    },
+}
+
+
 def execute(command: str, **kwargs) -> str:
     """
     Execute system command (whitelist-based security model).

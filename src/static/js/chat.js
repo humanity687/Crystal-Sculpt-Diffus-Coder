@@ -670,6 +670,8 @@ function updateProjectStatusBar(data) {
       modEl.style.display = "none";
     }
     pill.querySelector(".pill-project").textContent = data.project_id ? " · " + data.project_id : "";
+    const reviewBtnGroup = document.getElementById("review-btn-group");
+    if (reviewBtnGroup) reviewBtnGroup.style.display = "flex";
   } else {
     pill.style.display = "inline-flex";
     pill.classList.remove("active");
@@ -677,6 +679,8 @@ function updateProjectStatusBar(data) {
     pill.querySelector(".pill-phase").textContent = "";
     pill.querySelector(".pill-module").textContent = "";
     pill.querySelector(".pill-project").textContent = t("chat.project_inactive") || "No project";
+    const reviewBtnGroup = document.getElementById("review-btn-group");
+    if (reviewBtnGroup) reviewBtnGroup.style.display = "none";
   }
 }
 
@@ -740,17 +744,8 @@ function addToolCallBlockStructured(
   argumentsObj,
   resultText,
 ) {
-  let params = argumentsObj;
-  if (params && typeof params === "object") {
-    if (
-      "arguments" in params &&
-      params.arguments &&
-      typeof params.arguments === "object"
-    ) {
-      params = params.arguments;
-    }
-  }
-  if (!params || typeof params !== "object") params = {};
+  let params = argumentsObj || {};
+  if (typeof params !== "object") params = {};
   if (typeof toolName !== "string") {
     toolName = String(toolName);
   }
@@ -841,20 +836,8 @@ function updateToolCallResult(msgDiv, callId, resultText) {
 }
 
 function addConfirmationBlock(msgDiv, confirmId, toolName, argumentsObj, warning) {
-  let params = argumentsObj;
-  if (params && typeof params === "object") {
-    if (
-      "arguments" in params &&
-      params.arguments &&
-      typeof params.arguments === "object"
-    ) {
-      params = params.arguments;
-    }
-    if ("tool_name" in params && "arguments" in params) {
-      params = params.arguments;
-    }
-  }
-  if (!params || typeof params !== "object") params = {};
+  let params = argumentsObj || {};
+  if (typeof params !== "object") params = {};
   const blockDiv = document.createElement("div");
   blockDiv.className = "confirm-block";
   blockDiv.dataset.confirmId = confirmId;
@@ -1345,6 +1328,38 @@ messageInput.addEventListener("keydown", (e) => {
   if (e.ctrlKey && e.key === "Enter") sendMessage();
 });
 
+// Manual context compression button
+const compressBtn = document.getElementById("compress-btn");
+if (compressBtn) {
+  compressBtn.addEventListener("click", async () => {
+    if (isGenerating) return;
+    compressBtn.disabled = true;
+    try {
+      const resp = await fetchWithAuth("/api/compress", { method: "POST" });
+      const data = await resp.json();
+      if (data.success && data.cut_messages > 0) {
+        const msg = t("chat.compress_done", {
+          cut: data.cut_messages,
+          remaining: data.remaining_messages,
+        });
+        addMessage("system", msg, false, "compression-notice", true);
+        scrollToBottom();
+      } else if (data.success) {
+        addMessage("system", t("chat.compress_nothing"), false, "compression-notice", true);
+        scrollToBottom();
+      } else {
+        addMessage("system", "Compression failed: " + (data.error || "unknown"), false, "compression-notice", true);
+        scrollToBottom();
+      }
+    } catch (e) {
+      addMessage("system", "Compression failed: " + e.message, false, "compression-notice", true);
+      scrollToBottom();
+    } finally {
+      compressBtn.disabled = false;
+    }
+  });
+}
+
 // Automatic code highlighting
 (function () {
   const chat = document.getElementById("chat-messages");
@@ -1390,9 +1405,6 @@ async function handleWriteProposal(msgDiv, data) {
   const aiContent = data.content || "";
 
   let args = data.arguments || {};
-  if (args.arguments && typeof args.arguments === "object") {
-    args = args.arguments;
-  }
 
   const path = args.path || "";
   console.log("Write proposal for path:", path);
@@ -1577,7 +1589,12 @@ function handleApprovalRequired(msgDiv, data) {
   const phase = data.phase || "";
   const module = data.module || "";
   const content = data.content || "";
-  const files = data.files || [];
+  // Normalize files: backend may send a string instead of an array
+  let files = data.files || [];
+  if (typeof files === "string") {
+    try { files = JSON.parse(files); } catch (e) { files = [files]; }
+  }
+  if (!Array.isArray(files)) files = [];
   const fileContents = data.file_contents || {};
 
   // Clean up any existing modal
@@ -2243,3 +2260,228 @@ class CodeReviewPanel {
     }
   }
 }
+
+// ── Review Mode Triggers ──────────────────────────────────────────────────
+
+const REVIEW_MODES = {
+  contract_consistency: {
+    label: "契约一致性检查",
+    icon: "🔗",
+    apiMode: "contract_consistency",
+  },
+  single_step_critique: {
+    label: "单步挑刺检查",
+    icon: "🔍",
+    apiMode: "single_step_critique",
+  },
+  iteration_drift: {
+    label: "迭代脱节检查",
+    icon: "⚖️",
+    apiMode: "iteration_drift",
+  },
+};
+
+function showReviewPromptModal(modeKey) {
+  const modeInfo = REVIEW_MODES[modeKey];
+  if (!modeInfo) return;
+
+  const existing = document.querySelector(".review-modal-overlay");
+  if (existing) {
+    existing.classList.add("closing");
+    setTimeout(function () {
+      if (existing.parentElement) existing.remove();
+    }, 220);
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay review-modal-overlay";
+  const card = document.createElement("div");
+  card.className = "modal-card";
+  overlay.appendChild(card);
+
+  function close() {
+    overlay.classList.add("closing");
+    setTimeout(function () {
+      if (overlay.parentElement) overlay.remove();
+    }, 220);
+  }
+
+  overlay.addEventListener("click", function (e) {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener("keydown", function onEsc(e) {
+    if (e.key === "Escape") {
+      close();
+      document.removeEventListener("keydown", onEsc);
+    }
+  });
+
+  // Header
+  var header = document.createElement("div");
+  header.className = "modal-card-header";
+  header.innerHTML =
+    '<div class="modal-card-header-left">' +
+    '<span class="phase-badge-sm" style="background:#8b5cf6;">' +
+    modeInfo.icon + " " + modeInfo.label +
+    "</span></div>";
+  var closeBtn = document.createElement("button");
+  closeBtn.className = "modal-card-close";
+  closeBtn.innerHTML = "&#10005;";
+  closeBtn.addEventListener("click", close);
+  header.appendChild(closeBtn);
+  card.appendChild(header);
+
+  // Body
+  var body = document.createElement("div");
+  body.className = "modal-card-body review-modal-body";
+  var hintLabel = (typeof t !== "undefined" && t("review.inject_prompt_hint"))
+    ? t("review.inject_prompt_hint") : "是否注入提示？";
+  var hintDesc = (typeof t !== "undefined" && t("review.prompt_hint_desc"))
+    ? t("review.prompt_hint_desc") : "(可选：为审查提供额外上下文和关注方向)";
+  var hintPlaceholder = (typeof t !== "undefined" && t("review.prompt_hint_placeholder"))
+    ? t("review.prompt_hint_placeholder") : "例如：请特别关注安全性、边界条件和性能...（留空则使用默认审查策略）";
+  body.innerHTML =
+    '<p class="review-modal-question">' +
+    "<strong>" + modeInfo.label + "</strong> — " + hintLabel +
+    '<span class="review-modal-hint-desc">' + hintDesc + "</span></p>" +
+    '<textarea id="review-prompt-hint-input" class="review-modal-textarea" ' +
+    'placeholder="' + hintPlaceholder + '" rows="4"></textarea>';
+  card.appendChild(body);
+
+  // Footer
+  var footer = document.createElement("div");
+  footer.className = "modal-card-footer";
+  var runLabel = (typeof t !== "undefined" && t("review.run"))
+    ? t("review.run") : "运行审查";
+  var cancelLabel = (typeof t !== "undefined" && t("review.cancel"))
+    ? t("review.cancel") : "取消";
+
+  var runBtn = document.createElement("button");
+  runBtn.className = "confirm-approve";
+  runBtn.textContent = runLabel;
+  runBtn.addEventListener("click", function () {
+    var ta = document.getElementById("review-prompt-hint-input");
+    var promptHint = ta ? ta.value.trim() : "";
+    close();
+    triggerReview(modeKey, promptHint);
+  });
+
+  var cancelBtn = document.createElement("button");
+  cancelBtn.className = "confirm-reject";
+  cancelBtn.style.background = "#94a3b8";
+  cancelBtn.textContent = cancelLabel;
+  cancelBtn.addEventListener("click", close);
+
+  footer.appendChild(runBtn);
+  footer.appendChild(cancelBtn);
+  card.appendChild(footer);
+
+  document.body.appendChild(overlay);
+
+  setTimeout(function () {
+    var ta = document.getElementById("review-prompt-hint-input");
+    if (ta) ta.focus();
+  }, 300);
+}
+
+function triggerReview(modeKey, promptHint) {
+  var modeInfo = REVIEW_MODES[modeKey];
+  if (!modeInfo) return;
+
+  var runningLabel = (typeof t !== "undefined" && t("review.running"))
+    ? t("review.running", { mode: modeInfo.label }) : "Running review: " + modeInfo.label;
+  var loadingMsg = addMessage(
+    "assistant",
+    modeInfo.icon + " " + runningLabel + "...",
+    true,
+    "review-loading",
+    false
+  );
+  scrollToBottom();
+
+  fetchWithAuth("/api/review", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: modeInfo.apiMode,
+      project_id: "",
+      phase: "",
+      module: "",
+      prompt_hint: promptHint,
+    }),
+  })
+    .then(function (resp) { return resp.json(); })
+    .then(function (data) {
+      if (loadingMsg.parentElement) loadingMsg.remove();
+      if (data.status === "ok" && data.report) {
+        addReviewReportMessage(modeInfo, data.report);
+      } else {
+        addMessage(
+          "assistant",
+          modeInfo.icon + " **" + modeInfo.label + "** failed: " + (data.error || "Unknown error"),
+          false,
+          "review-error",
+          true
+        );
+      }
+      scrollToBottom();
+    })
+    .catch(function (err) {
+      if (loadingMsg.parentElement) loadingMsg.remove();
+      addMessage(
+        "assistant",
+        modeInfo.icon + " **" + modeInfo.label + "** network error: " + err.message,
+        false,
+        "review-error",
+        true
+      );
+      scrollToBottom();
+    });
+}
+
+function addReviewReportMessage(modeInfo, markdownReport) {
+  var msgDiv = document.createElement("div");
+  msgDiv.className = "message assistant review-report-message";
+
+  var headerBadge = document.createElement("div");
+  headerBadge.className = "review-report-header";
+  headerBadge.innerHTML =
+    '<span class="review-report-badge">' +
+    modeInfo.icon + " " + modeInfo.label + "</span>" +
+    '<span class="review-report-timestamp">' +
+    new Date().toLocaleTimeString() + "</span>";
+  msgDiv.appendChild(headerBadge);
+
+  var contentDiv = document.createElement("div");
+  contentDiv.className = "assistant-content review-report-content";
+  renderFullMarkdown(contentDiv, markdownReport);
+  msgDiv.appendChild(contentDiv);
+
+  chatMessages.appendChild(msgDiv);
+  saveMessagesToLocalStorage();
+  scrollToBottom();
+  return msgDiv;
+}
+
+// ── Review button bindings ─────────────────────────────────────────────────
+(function () {
+  var btnContract = document.getElementById("btn-review-contract");
+  var btnCritique = document.getElementById("btn-review-critique");
+  var btnDrift = document.getElementById("btn-review-drift");
+
+  if (btnContract) {
+    btnContract.addEventListener("click", function () {
+      showReviewPromptModal("contract_consistency");
+    });
+  }
+  if (btnCritique) {
+    btnCritique.addEventListener("click", function () {
+      showReviewPromptModal("single_step_critique");
+    });
+  }
+  if (btnDrift) {
+    btnDrift.addEventListener("click", function () {
+      showReviewPromptModal("iteration_drift");
+    });
+  }
+})();

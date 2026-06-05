@@ -10,9 +10,10 @@ This is the second level of the two-level memory system.
 The first level (search) returns summaries with memory_id/crystal_id references.
 When more detail is needed, the model calls recall to fetch the full text.
 
-Supports two ID types:
+Supports three retrieval modes (checked in priority order):
+  - crystal_id: specific crystal from CrystalStore
+  - project_id: ModuleRecord snapshots filtered by project/phase/module
   - memory_id: conv:/tool:/skill: — resolves to files on disk
-  - crystal_id: ExperienceCrystal:... — resolves from CrystalStore
 """
 
 import re
@@ -33,6 +34,34 @@ TYPE_TO_DIR = {
 }
 
 MAX_RETURN_CHARS = 999_999  # effectively no truncation
+
+schema = {
+    "type": "function",
+    "function": {
+        "name": "recall",
+        "description": (
+            "Fetch full content by ID — the second level of the two-level memory system. "
+            "When search() returns summaries with memory_id or crystal_id references, "
+            "use recall to get the original full text. Three retrieval paths (checked in order): "
+            "crystal_id (CrystalStore), project_id+phase+module (ModuleRecord snapshots), "
+            "memory_id (conv:/tool:/skill: disk files)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string", "description": "Memory ID from search results (format: conv:... / tool:... / skill:...)."},
+                "crystal_id": {"type": "string", "description": "Crystal ID from crystallize find results (format: CrystalType:project:module.name:version)."},
+                "query": {"type": "string", "description": "Optional search query to filter within the recalled content."},
+                "lines": {"type": "string", "description": "Line range to return (e.g. '10-50')."},
+                "dim": {"type": "string", "description": "Dimension key for ExperienceCrystal reference_values lookup (debug/architecture/implementation/contract/algorithm/meta)."},
+                "project_id": {"type": "string", "description": "Filter ModuleRecord snapshots by project."},
+                "phase": {"type": "string", "description": "Filter ModuleRecord snapshots by phase (L0-L8, L3.1)."},
+                "module": {"type": "string", "description": "Filter ModuleRecord snapshots by module name."},
+            },
+            "required": [],
+        },
+    },
+}
 
 
 def _resolve_path(memory_id: str) -> Path | None:
@@ -130,12 +159,18 @@ def _search_within(text: str, query: str) -> str:
 
 
 def execute(memory_id: str = "", crystal_id: str = "",
-            query: str = "", lines: str = "", dim: str = "") -> str:
+            query: str = "", lines: str = "", dim: str = "",
+            project_id: str = "", phase: str = "", module: str = "") -> str:
     """Fetch original document or crystal content by ID.
 
     This is the second-level retrieval tool. When the model sees a summary
     in context with a memory_id or crystal_id reference, it can call recall
     to get the full content.
+
+    Three retrieval paths (checked in priority order):
+      1. crystal_id — fetch a specific crystal from CrystalStore
+      2. project_id — fetch ModuleRecord snapshots by project/phase/module
+      3. memory_id — fetch a file from disk by conv:/tool:/skill: prefix
 
     Args:
         memory_id: Unique identifier (e.g., "conv:20260115-143022-a1b2c3",
@@ -147,22 +182,34 @@ def execute(memory_id: str = "", crystal_id: str = "",
         dim: Optional dimension filter (e.g., "debug", "algorithm").
              For memory_id: extracts matching dimension summary from vector DB.
              For crystal_id (ExperienceCrystal): returns specific reference_value.
+        project_id: Project identifier. When provided (without crystal_id/memory_id),
+                    fetches ModuleRecord snapshots from CrystalStore.
+        phase: Optional phase filter (L3..L7) for snapshot lookup.
+        module: Optional module filter for snapshot lookup.
 
     Returns:
         The full or filtered content with metadata header.
     """
     mid = memory_id.strip() if memory_id else ""
     cid = crystal_id.strip() if crystal_id else ""
-
-    if not mid and not cid:
-        return (
-            "Error: memory_id or crystal_id is required. "
-            "Use an ID from the context summaries."
-        )
+    pid = project_id.strip() if project_id else ""
 
     # ── crystal_id path ──
     if cid:
         return _resolve_crystal(cid, dim, query)
+
+    # ── project_id snapshot path ──
+    if pid:
+        return _resolve_snapshot(pid, phase.strip() if phase else "",
+                                 module.strip() if module else "",
+                                 dim, query)
+
+    if not mid:
+        return (
+            "Error: memory_id, crystal_id, or project_id is required. "
+            "Use an ID from the context summaries, or project_id to fetch "
+            "ModuleRecord snapshots."
+        )
 
     # ── memory_id path (existing behavior) ──
     path = _resolve_path(mid)
@@ -244,10 +291,16 @@ def _resolve_crystal(crystal_id: str, dim: str, query: str) -> str:
         return "Error: CrystalStore is not initialized. Cannot resolve crystal_id."
 
     crystal = store.get_crystal_by_string_id(crystal_id)
+    # Fallback: try numeric ID (returned by older crystallize find)
+    if not crystal:
+        try:
+            crystal = store.get_crystal(int(crystal_id))
+        except (ValueError, TypeError):
+            pass
     if not crystal:
         return (
             f"Recall failed: no crystal found for crystal_id '{crystal_id}'.\n"
-            f"Verify the ID matches a crystal shown in context."
+            f"Use crystallize(command=\"find\", ...) to list crystals and their recall_id values."
         )
 
     content = crystal.get("content", {})
@@ -306,6 +359,8 @@ def _format_crystal(crystal_id: str, crystal: dict, query: str) -> str:
     # Format content by crystal type
     if ctype == "ExperienceCrystal":
         body = _format_experience_content(content, query)
+    elif ctype == "ModuleRecord":
+        body = _format_module_record(content, query)
     else:
         body = _format_generic_crystal_content(content, query)
 
@@ -369,6 +424,147 @@ def _format_generic_crystal_content(content: dict, query: str) -> str:
         elif isinstance(value, (int, float, bool)):
             lines.append(f"**{key}**：{value}")
     return "\n".join(lines) + "\n" if lines else "(no content fields)\n"
+
+
+def _resolve_snapshot(project_id: str, phase: str, module: str,
+                      dim: str, query: str) -> str:
+    """Fetch ModuleRecord snapshots by project/phase/module from CrystalStore.
+
+    - Exact match (project+phase+module) → returns full snapshot content
+    - Partial match (project+phase or project alone) → returns summary list
+    - No match → returns available snapshots hint
+    """
+    from src import state
+
+    store = state.crystal_store
+    if not store:
+        return "Error: CrystalStore is not initialized. Cannot fetch snapshots."
+
+    records = store.get_active_crystals(
+        project_id=project_id,
+        crystal_type="ModuleRecord",
+        layer=phase if phase else None,
+        module=module if module else None,
+    )
+
+    if not records:
+        # List all available snapshots for this project to help the model
+        all_records = store.get_active_crystals(
+            project_id=project_id, crystal_type="ModuleRecord"
+        )
+        if not all_records:
+            return (
+                f"No ModuleRecord snapshots found for project '{project_id}'.\n"
+                f"Snapshots are created when request_approval is called at L3/L7.\n"
+                f"Use recall(project_id=\"{project_id}\") after completing some modules."
+            )
+        lines = [
+            f"No snapshots matched phase={phase or 'any'}, module={module or 'any'}.",
+            f"Available snapshots in project '{project_id}':",
+            "",
+        ]
+        for r in all_records:
+            content = r.get("content", {})
+            if isinstance(content, dict):
+                rt = content.get("record_type", r.get("layer", "?"))
+                mod = r.get("module", "?")
+                s = content.get("summary", "")
+                lines.append(f"- [{rt}] {mod}: {s}")
+            else:
+                lines.append(f"- {r.get('layer', '?')} / {r.get('module', '?')}")
+        lines.append("")
+        lines.append("Use recall(project_id=..., phase=..., module=...) with one of these.")
+        return "\n".join(lines)
+
+    # Single result → full content
+    if len(records) == 1:
+        r = records[0]
+        content = r.get("content", {})
+        if not isinstance(content, dict):
+            content = {}
+        ctype = r.get("crystal_type", "ModuleRecord")
+        header = (
+            f"## Module Snapshot: {r.get('module', '?')} / {r.get('layer', '?')}\n"
+            f"- Project: {project_id}\n"
+            f"- Type: {ctype}\n"
+            f"- Vitality: {r.get('vitality', 0)}\n"
+            f"\n---\n\n"
+        )
+        body = _format_module_record(content, query)
+        result = header + body
+        if len(result) > MAX_RETURN_CHARS:
+            result = result[:MAX_RETURN_CHARS] + "\n\n[... truncated]"
+        return result
+
+    # Multiple results → summary list
+    lines = [
+        f"Found {len(records)} matching snapshots",
+        f"(project={project_id}, phase={phase or 'any'}, module={module or 'any'}):",
+        "",
+    ]
+    for i, r in enumerate(records, 1):
+        content = r.get("content", {})
+        if isinstance(content, dict):
+            rt = content.get("record_type", r.get("layer", "?"))
+            s = content.get("summary", "")
+            lines.append(f"{i}. [{rt}] {r.get('module', '?')}: {s}")
+        else:
+            lines.append(f"{i}. {r.get('layer', '?')} / {r.get('module', '?')}")
+    lines.append("")
+    lines.append("Narrow your search with phase= and module= parameters.")
+    return "\n".join(lines)
+
+
+def _format_module_record(content: dict, query: str = "") -> str:
+    """Format a ModuleRecord snapshot content for display."""
+    lines = []
+
+    record_type = content.get("record_type", "")
+    phase = content.get("phase", "")
+    mod = content.get("module", "")
+    summary = content.get("summary", "")
+    body = content.get("content", "")
+
+    if record_type:
+        lines.append(f"**Record Type**: {record_type}")
+    if phase:
+        lines.append(f"**Phase**: {phase}")
+    if mod:
+        lines.append(f"**Module**: {mod}")
+    if summary:
+        lines.append(f"**Summary**: {summary}")
+    if record_type or phase or mod or summary:
+        lines.append("")
+
+    if body and isinstance(body, str):
+        lines.append("### Content")
+        lines.append("")
+        lines.append(body)
+        lines.append("")
+
+    files = content.get("files", {})
+    if files and isinstance(files, dict):
+        lines.append("### Attached Files")
+        lines.append("")
+        for fname, fcontent in files.items():
+            lines.append(f"**`{fname}`**:")
+            lines.append("")
+            if isinstance(fcontent, str):
+                lines.append("```")
+                # Limit individual file content to reasonable size
+                if len(fcontent) > 30000:
+                    fcontent = fcontent[:30000] + "\n\n[... file truncated]"
+                lines.append(fcontent)
+                lines.append("```")
+            lines.append("")
+
+    if query and body and isinstance(body, str):
+        # Highlight the matching context within the body
+        ql = query.lower()
+        if ql in body.lower():
+            lines.append(f"*关键词 \"{query}\" 在内容中匹配*")
+
+    return "\n".join(lines) + "\n" if lines else "(empty snapshot)\n"
 
 
 def _parse_lines(lines: str, total_lines: int):

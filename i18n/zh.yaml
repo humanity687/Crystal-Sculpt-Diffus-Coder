@@ -24,6 +24,9 @@ chat:
   compression_remaining: "剩余 {count} 条"
   compression_desc: "由于上下文长度超限，系统自动压缩了 {cut} 条较早的消息，当前保留 {remaining} 条。"
   compression_hint: "核心上下文（相位指引、结晶契约、知识摘要）已保留。如需完整历史，请使用 TUI 调试模式。"
+  compress_title: "手动压缩上下文"
+  compress_done: "🗜️ 上下文已压缩：裁剪 **{cut}** 条消息，剩余 **{remaining}** 条。"
+  compress_nothing: "🗜️ 消息数量已很少，无需压缩。"
   project_inactive: "项目模式未激活"
 
 knowledge:
@@ -131,3 +134,17 @@ register:
   encryption_failed: "加密失败"
   setup_failed: "设置失败"
   network_error: "网络错误"
+
+review:
+  contract_consistency: "契约检查"
+  contract_consistency_title: "契约一致性检查 — 检查所有L3模块间契约一致性"
+  single_step_critique: "挑刺"
+  single_step_critique_title: "单步挑刺检查 — 对当前阶段进行主动批评性审查"
+  iteration_drift: "脱节检查"
+  iteration_drift_title: "迭代脱节检查 — 追溯L3→L7全链，检查偏离"
+  inject_prompt_hint: "是否注入提示？"
+  prompt_hint_desc: "(可选：为审查提供额外上下文和关注方向)"
+  prompt_hint_placeholder: "例如：请特别关注安全性、边界条件和性能...（留空则使用默认审查策略）"
+  run: "运行审查"
+  cancel: "取消"
+  running: "正在运行审查: {mode}..."

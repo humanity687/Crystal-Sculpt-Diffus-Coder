@@ -47,14 +47,15 @@ You should have received a copy of the GNU Affero General Public License along w
 - **Output**: A string with two parts separated by `---FILE_CONTENT---`:
     - **First part** (stored in agent message history):
         - `edit` / `replace` / `insert`: A unified diff showing only the changed region (±2 context lines).
-        - `overwrite`: An AST structure summary of the new file content.
+        - `overwrite` (existing file): A unified diff of the full file.
+        - `overwrite` (new file): Line count and byte size summary.
     - **Second part** (sent to frontend for review): The complete proposed file content.
 
 - **Mode selection guide**:
     | Scenario | Mode | Notes |
     |----------|------|-------|
     | Create new file | `overwrite` | Auto-creates parent dirs on approval |
-    | Completely rewrite a file | `overwrite` | Returns AST structure for agent reference |
+    | Completely rewrite a file | `overwrite` | Returns unified diff for agent reference |
     | Replace a function body | `edit` | Delete old lines, insert new implementation |
     | Rename a variable everywhere | `replace` | Use `expected_replacements=N` if replacing N occurrences |
     | Fix a typo in one location | `replace` | Default `expected_replacements=1` ensures uniqueness |

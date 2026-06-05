@@ -10,6 +10,15 @@ Returns the current local date and time
 
 from datetime import datetime
 
+schema = {
+    "type": "function",
+    "function": {
+        "name": "time",
+        "description": "Get the current local date and time. No parameters needed.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
 
 def execute() -> str:
     """

@@ -10,6 +10,7 @@ Knowledge Module - Startup Orchestration and Public Exports
 from .loader import (
     load_builtin_tools,
     load_mcp_servers,
+    _assemble_tools_metadata,
     tool_functions,
     tools_metadata,
     cleanup_mcp_clients,
@@ -78,13 +79,18 @@ _migrate_to_new_structure()
 # Startup sequence
 load_builtin_tools()
 load_mcp_servers()
+
+# Assemble tools_metadata from collected schemas
+tools_metadata[:] = _assemble_tools_metadata()
+
 check_and_update()
 
 # Print status
-from .loader import _internal_tools, _mcp_tools
+from .loader import _internal_tools, _mcp_tools, _internal_schemas, _mcp_schemas
 
-print("Built-in tool list:", list(_internal_tools.keys()))
-print(f"MCP tool count: {len(_mcp_tools)}")
+print(f"Built-in tools: {list(_internal_tools.keys())} ({len(_internal_schemas)} with schemas)")
+print(f"MCP tools: {len(_mcp_tools)} ({len(_mcp_schemas)} with schemas)")
+print(f"Total function definitions in tools_metadata: {len(tools_metadata)}")
 print("Knowledge base incremental update completed.")
 
 __all__ = [

@@ -10,6 +10,22 @@ from pathlib import Path
 
 from knowledge.config import RAW_SKILLS_DIR, SKILLS_SUMMARY_DIR, VECTOR_DB_PATH, KNOWLEDGE_ROOT
 
+schema = {
+    "type": "function",
+    "function": {
+        "name": "add_skill",
+        "description": "Save a skill as Markdown and index its summary into the knowledge base for future retrieval.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name, used as filename (e.g. 'nginx_setup'). Alphanumeric, underscores and hyphens only."},
+                "content": {"type": "string", "description": "Skill content in Markdown format."},
+            },
+            "required": ["name", "content"],
+        },
+    },
+}
+
 
 def execute(name: str, content: str):
     """

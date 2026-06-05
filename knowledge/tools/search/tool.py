@@ -14,6 +14,22 @@ from ddgs import DDGS
 _SEARCH_TIMEOUT = 15  # seconds
 _MAX_QUERY_LENGTH = 500
 
+schema = {
+    "type": "function",
+    "function": {
+        "name": "search",
+        "description": "Search the internet using DuckDuckGo. Returns Markdown-formatted results with titles, snippets, and URLs.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keyword or phrase."},
+                "max_results": {"type": "integer", "description": "Maximum number of results to return (default 5, max depends on engine)."},
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 
 def execute(query: str, max_results: int = 5) -> str:
     """

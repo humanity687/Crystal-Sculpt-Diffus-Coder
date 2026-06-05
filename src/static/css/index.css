@@ -1327,8 +1327,17 @@ body {
 .chat-input-area button:hover {
   background: #2563eb;
 }
-.chat-input-area button:hover {
-  background: #2563eb;
+.chat-input-area button.btn-compress {
+  background: transparent;
+  color: #64748b;
+  padding: 0.55rem 0.6rem;
+  font-size: 0.85rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 2rem;
+}
+.chat-input-area button.btn-compress:hover {
+  background: #f1f5f9;
+  color: #334155;
 }
 
 /* Configuration form */
@@ -1726,4 +1735,172 @@ body {
   .message {
     max-width: 88%;
   }
+}
+
+/* ── Review Button Group (page-header) ───────────────────────────────── */
+.review-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.review-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+  white-space: nowrap;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+.review-btn:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #1e293b;
+  transform: translateY(-1px);
+}
+.review-btn:active {
+  transform: scale(0.96);
+}
+
+.review-btn-contract:hover {
+  background: #ede9fe;
+  border-color: #c4b5fd;
+  color: #5b21b6;
+}
+.review-btn-critique:hover {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b91c1c;
+}
+.review-btn-drift:hover {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  color: #92400e;
+}
+
+/* ── Review Prompt Modal ─────────────────────────────────────────────── */
+.review-modal-question {
+  font-size: 0.95rem;
+  color: #1e293b;
+  margin-bottom: 0.75rem;
+  line-height: 1.6;
+}
+
+.review-modal-hint-desc {
+  display: block;
+  font-size: 0.82rem;
+  color: #94a3b8;
+  font-weight: 400;
+  margin-top: 4px;
+}
+
+.review-modal-textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  font-size: 0.88rem;
+  font-family: inherit;
+  resize: vertical;
+  background: #fafcff;
+  box-sizing: border-box;
+}
+.review-modal-textarea:focus {
+  outline: none;
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.08);
+}
+
+/* ── Review Report Message ───────────────────────────────────────────── */
+.review-report-message {
+  max-width: 85% !important;
+  background: #faf5ff !important;
+  border: 1px solid #e9d5ff;
+  border-left: 4px solid #8b5cf6;
+  padding: 0.9rem 1.1rem !important;
+}
+
+.review-report-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid #ede9fe;
+}
+
+.review-report-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: linear-gradient(135deg, #8b5cf6, #6366f1);
+}
+
+.review-report-timestamp {
+  font-size: 0.72rem;
+  color: #a78bfa;
+  font-family: "SF Mono", "Fira Code", monospace;
+}
+
+.review-report-content {
+  font-size: 0.88rem;
+  line-height: 1.65;
+  color: #334155;
+}
+.review-report-content h1 {
+  font-size: 1.1rem;
+  margin-top: 0.75rem;
+  margin-bottom: 0.5rem;
+  color: #5b21b6;
+}
+.review-report-content h2 {
+  font-size: 1rem;
+  margin-top: 0.75rem;
+  margin-bottom: 0.4rem;
+  color: #6d28d9;
+  border-bottom: 1px solid #ede9fe;
+  padding-bottom: 0.3rem;
+}
+.review-report-content h3 {
+  font-size: 0.92rem;
+  margin-top: 0.6rem;
+  margin-bottom: 0.3rem;
+  color: #7c3aed;
+}
+.review-report-content pre {
+  background: #f5f3ff;
+  border: 1px solid #e9d5ff;
+}
+.review-report-content table {
+  font-size: 0.85rem;
+}
+.review-report-content table th {
+  background: #f5f3ff;
+}
+
+.review-loading {
+  background: #f5f3ff !important;
+  border-left: 3px solid #a78bfa;
+}
+.review-error {
+  background: #fef2f2 !important;
+  border-left: 3px solid #ef4444;
 }

@@ -239,7 +239,7 @@ def _extract_name(node) -> str:
 
 
 def _parse_structure(path: Path, content: str) -> str | None:
-    """Parse code file structure, return skeleton summary"""
+    """Parse code file structure, return skeleton summary with error detection"""
     suffix = path.suffix.lower()
     if suffix not in LANGUAGES:
         return None
@@ -266,6 +266,32 @@ def _parse_structure(path: Path, content: str) -> str | None:
                 walk(child, depth)
 
     walk(tree.root_node)
+
+    # Collect syntax errors from ERROR nodes
+    content_lines = content.split("\n")
+    error_blocks = []
+
+    def collect_errors(node):
+        if node.type == "ERROR":
+            start = node.start_point.row
+            end = node.end_point.row
+            err_lines = content_lines[start:end + 1]
+            text = "\n".join(err_lines).strip()
+            if text:
+                error_blocks.append((start + 1, end + 1, text))
+        for child in node.children:
+            collect_errors(child)
+
+    collect_errors(tree.root_node)
+
+    if error_blocks:
+        if lines:
+            lines.append("")
+        lines.append("⚠️  SYNTAX ERRORS")
+        for start, end, text in error_blocks:
+            line_range = f"L{start}" if start == end else f"L{start}-L{end}"
+            lines.append(f"  [{line_range}] {text}")
+
     return "\n".join(lines) if lines else None
 
 
@@ -620,6 +646,36 @@ def ett(urls: str) -> str:
 # ---------------------------------------------------------------------------
 #  Public entry point
 # ---------------------------------------------------------------------------
+
+schema = {
+    "type": "function",
+    "function": {
+        "name": "read",
+        "description": (
+            "Read file contents with three modes: 'all' (default, read from offset with limit), "
+            "'lines' (read a precise line range), 'find' (search for a string or regex). "
+            "Directories are scanned for project structure. "
+            "PDF, DOCX etc. are converted via MarkItDown. Image/video files are analyzed via multimodal ETT."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute file path. Use forward slashes even on Windows."},
+                "mode": {"type": "string", "enum": ["all", "lines", "find"], "description": "Reading mode. Default: 'all'."},
+                "offset": {"type": "integer", "description": "Start line number (1-based). Default: 1."},
+                "limit": {"type": "integer", "description": "Maximum lines to return. Default: 2000."},
+                "show_structure": {"type": "boolean", "description": "If true, prepend a tree-sitter AST skeleton."},
+                "start_line": {"type": "integer", "description": "For 'lines' mode: first line (1-based, inclusive)."},
+                "end_line": {"type": "integer", "description": "For 'lines' mode: last line (1-based, inclusive)."},
+                "query": {"type": "string", "description": "For 'find' mode: search string or regex pattern."},
+                "is_regex": {"type": "boolean", "description": "Treat query as regex. Default: false."},
+                "context_lines": {"type": "integer", "description": "Context lines around each match. Default: 2."},
+                "max_matches": {"type": "integer", "description": "Maximum matches to return. Default: 20."},
+            },
+            "required": ["path"],
+        },
+    },
+}
 
 def execute(
     path: str,

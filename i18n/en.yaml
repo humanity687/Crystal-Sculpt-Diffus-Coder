@@ -24,6 +24,9 @@ chat:
   compression_remaining: "{count} remaining"
   compression_desc: "Context length exceeded limit — automatically compressed {cut} older messages, keeping {remaining}."
   compression_hint: "Core context (phase guidance, crystal contracts, knowledge summaries) is preserved. Use TUI debug mode for full history."
+  compress_title: "Manually compress context"
+  compress_done: "🗜️ Context compressed: cut **{cut}** messages, **{remaining}** remaining."
+  compress_nothing: "🗜️ No messages to compress (already minimal)."
   project_inactive: "Project mode inactive"
 
 knowledge:
@@ -131,3 +134,17 @@ register:
   encryption_failed: "Encryption failed"
   setup_failed: "Setup failed"
   network_error: "Network error"
+
+review:
+  contract_consistency: "Contract Check"
+  contract_consistency_title: "Contract Consistency Check — Verify cross-module L3 contract consistency"
+  single_step_critique: "Critique"
+  single_step_critique_title: "Single-Step Critique — Proactive critical review of the current phase"
+  iteration_drift: "Drift Check"
+  iteration_drift_title: "Iteration Drift Check — Trace L3→L7 chain for deviations"
+  inject_prompt_hint: "Inject a prompt hint?"
+  prompt_hint_desc: "(Optional: Provide additional context and focus areas for the review)"
+  prompt_hint_placeholder: "e.g., Pay special attention to security, boundary conditions, and performance... (leave blank for default review strategy)"
+  run: "Run Review"
+  cancel: "Cancel"
+  running: "Running review: {mode}..."

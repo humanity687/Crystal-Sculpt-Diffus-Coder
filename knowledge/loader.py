@@ -18,11 +18,17 @@ from knowledge.mcps import MCPStdioClient
 
 # Internal tool registry
 _internal_tools = {}
+_internal_schemas = {}
 
 # MCP tool registry
 _mcp_tools = {}
+_mcp_schemas = {}
 _mcp_clients = []
 _mcp_lock = threading.Lock()
+
+# Public exports — populated after load_builtin_tools() + load_mcp_servers()
+tool_functions = {}
+tools_metadata = []
 
 
 def load_builtin_tools():
@@ -61,6 +67,11 @@ def load_builtin_tools():
             continue
 
         _internal_tools[tool_name] = module.execute
+        if hasattr(module, "schema"):
+            _internal_schemas[tool_name] = module.schema
+
+        # Register in flat tool_functions dict
+        tool_functions[tool_name] = module.execute
 
 
 def load_mcp_servers():
@@ -129,7 +140,22 @@ def load_mcp_servers():
 
                         return wrapper
 
-                    _mcp_tools[full_name] = make_wrapper(client, tool_name)
+                    wrapper_fn = make_wrapper(client, tool_name)
+                    _mcp_tools[full_name] = wrapper_fn
+
+                    # Register in flat tool_functions
+                    tool_functions[full_name] = wrapper_fn
+
+                    # Build individual OpenAI function schema from MCP tool definition
+                    mcp_func_schema = {
+                        "type": "function",
+                        "function": {
+                            "name": full_name,
+                            "description": tool.get("description", f"MCP tool {tool_name} from server {name}"),
+                            "parameters": tool.get("inputSchema", {"type": "object", "properties": {}, "required": []}),
+                        },
+                    }
+                    _mcp_schemas[full_name] = mcp_func_schema
         except Exception as e:
             print(f"Failed to start MCP server {name}: {e}")
             import traceback
@@ -138,41 +164,15 @@ def load_mcp_servers():
             continue
 
 
-def tools(tool_name: str = None, arguments: dict = None) -> str:
+def _assemble_tools_metadata():
+    """Build the tools_metadata list from collected schemas.
+
+    Called after load_builtin_tools() and load_mcp_servers() have both run.
+    Merges built-in tool schemas with MCP tool schemas into a single list
+    of individual OpenAI function definitions.
     """
-    Unified tool call interface: Supports built-in tools and MCP tools (format: server_name/tool_name)
-    """
-    if not tool_name:
-        return "Error: 'tool_name' parameter is required. Usage: tools(tool_name=\"read\", arguments={...})"
-    if "/" in tool_name:
-        with _mcp_lock:
-            if tool_name in _mcp_tools:
-                try:
-                    return _mcp_tools[tool_name](**(arguments or {}))
-                except Exception as e:
-                    return f"MCP tool call failed: {e}"
-            else:
-                return f"Error: Unknown MCP tool {tool_name}"
-    if tool_name not in _internal_tools:
-        return f"Error: Unknown tool {tool_name}"
-    try:
-        args = arguments or {}
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except json.JSONDecodeError:
-                try:
-                    import ast
-                    args = ast.literal_eval(args)
-                except (ValueError, SyntaxError):
-                    return (
-                        f"Error: 'arguments' parameter is a string that could not be "
-                        f"parsed as JSON. Pass arguments as a JSON object directly, "
-                        f"e.g. arguments={{...}}, not arguments='{{...}}'"
-                    )
-        return _internal_tools[tool_name](**args)
-    except Exception as e:
-        return f"Call failed: {e}"
+    meta = list(_internal_schemas.values()) + list(_mcp_schemas.values())
+    return meta
 
 
 def cleanup_mcp_clients():
@@ -184,27 +184,6 @@ def cleanup_mcp_clients():
             pass
 
 
-# Tool function dictionary
-tool_functions = {"tools": tools}
-
-# Tool metadata
-tools_metadata = [
-    {
-        "type": "function",
-        "function": {
-            "name": "tools",
-            "description": "Call any available tool. Parameters: tool_name (tool name), arguments (JSON object). All built-in tools are called through this tool.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "tool_name": {
-                        "type": "string",
-                        "description": "Tool name, e.g., read, write, command, search, similarity, add_task, del_task, ett, beijing_subway, etc. External MCP tools use the format server_name/tool_name.",
-                    },
-                    "arguments": {"type": "object", "description": "Tool parameters"},
-                },
-                "required": ["tool_name"],
-            },
-        },
-    }
-]
+# tools_metadata and tool_functions are populated by the load functions above.
+# _assemble_tools_metadata() is called from knowledge/__init__.py after both
+# load_builtin_tools() and load_mcp_servers() have completed.

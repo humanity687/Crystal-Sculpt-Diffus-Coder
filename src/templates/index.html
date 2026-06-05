@@ -93,6 +93,11 @@ You should have received a copy of the GNU Affero General Public License along w
                   <span class="pill-project"></span>
                 </span>
               </span>
+              <div class="review-btn-group" id="review-btn-group" style="display:none">
+                <button class="review-btn review-btn-contract" id="btn-review-contract" title="契约一致性检查 — 检查所有L3模块间契约一致性">🔗 契约检查</button>
+                <button class="review-btn review-btn-critique" id="btn-review-critique" title="单步挑刺检查 — 对当前阶段进行主动批评性审查">🔍 挑刺</button>
+                <button class="review-btn review-btn-drift" id="btn-review-drift" title="迭代脱节检查 — 追溯L3→L7全链，检查偏离">⚖️ 脱节检查</button>
+              </div>
             </div>
             <div id="chat-messages" class="chat-messages"></div>
             <div id="token-usage-bar" class="token-usage-bar" style="display:none">
@@ -105,6 +110,7 @@ You should have received a copy of the GNU Affero General Public License along w
                 data-i18n-placeholder="chat.placeholder"
                 placeholder="Enter your command... Ctrl+Enter to send"
               ></textarea>
+              <button id="compress-btn" class="btn-compress" title="Compress context">🗜️</button>
               <button id="send-btn" data-i18n="chat.send">Send</button>
             </div>
           </div>

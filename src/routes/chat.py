@@ -486,6 +486,26 @@ def read_file():
         return jsonify({"error": str(e)}), 500
 
 
+@chat_bp.route("/api/compress", methods=["POST"])
+@login_required
+def compress():
+    """Manually trigger context compression using the same multi-tier algorithm
+    as the reactive (context-length-driven) compression."""
+    agent = state.chat_agent
+    if agent is None:
+        return jsonify({"error": "Agent not initialized"}), 503
+
+    before = len(agent.messages)
+    agent.memory()
+    after = len(agent.messages)
+
+    return jsonify({
+        "success": True,
+        "cut_messages": before - after,
+        "remaining_messages": after,
+    })
+
+
 _SENSITIVE_FILENAMES = {
     "config.json", "config.json.tmp", "private.key", ".env",
     "crystals.db", "messages.json",
@@ -523,3 +543,57 @@ def write_file():
         return jsonify({"error": "Permission denied"}), 403
     except Exception as e:
       return jsonify({"error": str(e)}), 500
+
+
+@chat_bp.route("/api/review", methods=["POST"])
+@login_required
+def run_review():
+    """
+    Run a review_approval mode directly and return the Markdown report.
+
+    Request body:
+        mode: str — "contract_consistency", "single_step_critique", or "iteration_drift"
+        project_id: str (optional) — defaults to active project
+        phase: str (optional) — defaults to active phase
+        module: str (optional) — defaults to active module
+        prompt_hint: str (optional) — additional user guidance for the review LLM
+
+    Returns JSON: { "status": "ok", "report": "<markdown>" }
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"status": "error", "error": "Request body must be JSON"}), 400
+
+    mode = data.get("mode", "").strip()
+    if not mode:
+        return jsonify({"status": "error", "error": "Missing required field: mode"}), 400
+
+    project_id = data.get("project_id", "").strip()
+    phase = data.get("phase", "").strip()
+    module = data.get("module", "").strip()
+    prompt_hint = data.get("prompt_hint", "").strip()
+
+    # Fallback to active project if not specified
+    if not project_id and state.active_project:
+        project_id = state.active_project.get("project_id", "")
+    if not phase and state.active_project:
+        phase = state.active_project.get("phase", "")
+    if not module and state.active_project:
+        module = state.active_project.get("module", "")
+
+    # Lazy import — loader.py registers tool.py as a flat module (not a package),
+    # so we cannot use "from knowledge.tools.review_approval.tool import ..."
+    import importlib.util as _iu
+    _tool_path = Path(__file__).parent.parent.parent / "knowledge/tools/review_approval/tool.py"
+    _spec = _iu.spec_from_file_location("_review_approval_tool", str(_tool_path))
+    _mod = _iu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    review_execute_mode = _mod.execute_mode
+
+    try:
+        report = review_execute_mode(mode, project_id, phase, module, prompt_hint)
+        return jsonify({"status": "ok", "report": report})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e)}), 500
