@@ -21,6 +21,8 @@ schema = {
                 "content": {"type": "string", "description": "Approval request body in Markdown — describe the deliverable, key decisions, test results, etc."},
                 "files": {"type": "array", "items": {"type": "string"}, "description": "Optional list of file paths to attach for preview."},
                 "summary": {"type": "string", "description": "One-line summary for the snapshot index."},
+                "target_module": {"type": "string", "description": "When reviewing a completed module, set to the module name whose crystals should be loaded from CrystalStore. The 'module' parameter still names the subject module for the approval record."},
+                "target_phase": {"type": "string", "description": "When target_module is set, the specific phase to load. If omitted when target_module is set, loads all phases for that module."},
             },
             "required": ["phase", "module", "content"],
         },
@@ -29,13 +31,18 @@ schema = {
 
 
 def execute(phase: str, module: str, content: str,
-            files: list = None, summary: str = "") -> str:
+            files: list = None, summary: str = "",
+            target_module: str = "", target_phase: str = "") -> str:
     """
     Store a ModuleRecord snapshot for the current Lx phase output.
 
     This replaces set_project(action="record", ...).  The model passes Lx
     content DIRECTLY as a parameter — no backward-message-scanning, no
     timing issues, no delimiter guessing.
+
+    When target_module is set (cross-module review), the tool loads the
+    original ModuleRecord crystal for the target module/phase and embeds
+    it in the snapshot for side-by-side review.
 
     Args:
         phase: Workflow phase. One of L3..L7, L3.1
@@ -47,6 +54,10 @@ def execute(phase: str, module: str, content: str,
                content for preview.  Mainly used in L7 but any layer
                may attach files.
         summary: One-line summary for snapshot index.
+        target_module: When reviewing a completed module, the module
+               whose crystals to load from CrystalStore.
+        target_phase: When target_module is set, the specific phase
+               to load (defaults to `phase` if omitted).
 
     Returns:
         JSON string: {"status": "stored", "crystal_id": "...", ...}
@@ -100,6 +111,30 @@ def execute(phase: str, module: str, content: str,
         except Exception as e:
             file_contents[fpath] = f"[Error reading file: {e}]"
 
+    # ── Cross-module review: load original crystal data for target module ──
+    original_snapshot = None
+    original_file_contents = {}
+    original_files = []
+
+    if target_module and target_module.strip():
+        tmod = target_module.strip()
+        tphase = target_phase.strip() if target_phase and target_phase.strip() else phase
+        proj_id = state.active_project["project_id"]
+
+        target_records = state.crystal_store.get_active_crystals(
+            project_id=proj_id,
+            crystal_type="ModuleRecord",
+            module=tmod,
+            layer=tphase,
+        )
+        if target_records:
+            target = target_records[0]
+            tgt_content = target.get("content", {})
+            if isinstance(tgt_content, dict):
+                original_snapshot = tgt_content
+                original_file_contents = tgt_content.get("files", {})
+                original_files = list(original_file_contents.keys())
+
     record_type = f"{phase}_snapshot"
     snapshot = {
         "record_type": record_type,
@@ -110,6 +145,13 @@ def execute(phase: str, module: str, content: str,
     }
     if file_contents:
         snapshot["files"] = file_contents
+
+    # ── Attach cross-module target metadata ──
+    if target_module and target_module.strip():
+        snapshot["target_module"] = target_module.strip()
+        snapshot["target_phase"] = target_phase.strip() if target_phase and target_phase.strip() else phase
+        if original_snapshot:
+            snapshot["original_snapshot"] = original_snapshot
 
     proj_id = state.active_project["project_id"]
     name = f"{module.strip()}-{record_type}"
@@ -123,7 +165,7 @@ def execute(phase: str, module: str, content: str,
             name=name,
             content=snapshot,
         )
-        return json.dumps({
+        result = {
             "status": "stored",
             "crystal_id": cid,
             "phase": phase,
@@ -131,6 +173,16 @@ def execute(phase: str, module: str, content: str,
             "content": content,
             "files": files or [],
             "file_contents": file_contents,
-        }, ensure_ascii=False)
+        }
+        if target_module and target_module.strip():
+            result["target_module"] = target_module.strip()
+            result["target_phase"] = target_phase.strip() if target_phase else phase
+            if original_snapshot:
+                result["original_content"] = original_snapshot.get("content", "")
+                result["original_files"] = original_files
+                result["original_file_contents"] = original_file_contents
+                result["original_summary"] = original_snapshot.get("summary", "")
+
+        return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return f"Error storing ModuleRecord: {e}"

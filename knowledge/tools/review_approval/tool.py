@@ -472,7 +472,8 @@ def execute(
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key, base_url=base_url or None)
-        user_prompt = _REVIEW_USER_PROMPT.format(count=len(records), items=items_text)
+        # Avoid .format() — items_text may contain curly braces from code/JSON
+        user_prompt = f"Please review the following {len(records)} approval snapshot(s).\n\n{items_text}"
 
         response = client.chat.completions.create(
             model=model,
@@ -969,6 +970,223 @@ def execute_iteration_drift(
         return f"Error: Iteration drift check failed: {e}\n\n{data_text}"
 
 
+# ── Mode 4: Cross-Module Review ─────────────────────────────────────────────
+
+_REVIEW_CROSS_MODULE_SYSTEM = """\
+You are a senior engineering reviewer performing a cross-module quality audit.
+Your task is to review completed work on a module that the agent has already
+finished with.
+
+Unlike forward-looking reviews (which focus on the current phase), this review
+looks BACK at completed work. The agent has moved on to other modules — your job
+is to audit the frozen artifacts and find issues the agent may have missed.
+
+Review criteria:
+
+1. **Completeness**: Are all required artifacts present for each phase?
+   Are there gaps in the iteration chain (L3→L4→L6→L7)?
+2. **Correctness**: Logical errors, security issues, missing constraints,
+   incorrect assumptions.
+3. **Consistency**: Do artifacts across phases form a coherent whole?
+   Does L7 code satisfy L3 contracts? Does L4 algorithm correctly implement
+   L3 pre/post conditions?
+4. **Quality**: Is the implementation clean, well-structured, and maintainable?
+   Are edge cases handled? Are error paths covered?
+5. **Cross-module Impact (if applicable)**: Does this module's contract align
+   with its dependencies? Could changes to this module break downstream consumers?
+
+When reviewing a single phase (nitpick/挑刺 mode):
+- Focus deeply on that phase's artifact
+- Check for phase-specific issues (contract clarity for L3, algorithm correctness for L4, etc.)
+- Verify the artifact meets the bar for its phase definition
+
+When reviewing all phases (check/检查 mode):
+- Trace the full chain for this module
+- Identify the weakest phase
+- Check for drift between phases
+- Look for missing intermediate artifacts
+
+For each issue found:
+- Rate severity: 🔴 Critical / ⚠️ Medium / 💡 Suggestion
+- Reference the specific artifact and quote relevant text
+- Propose a concrete, actionable fix
+- Estimate impact: does this block downstream work?
+
+Output a structured Markdown report:
+- Overall module health assessment (1 paragraph)
+- Per-phase summary (what was found in each completed phase)
+- Detailed findings with severity ratings
+- Top 3 priority fixes
+- Verdict: **Excellent** / **Good with Minor Issues** / **Needs Revision** / **Critical Issues Found**
+
+Be thorough but fair. The goal is to catch latent issues before the project is
+finalized. Reply in the same language as the input artifacts.\
+"""
+
+
+def _collect_module_data_for_review(store, project_id: str, module: str, target_phase: str) -> str:
+    """Collect all crystal data for a module, optionally filtered by phase.
+
+    Returns formatted Markdown with ModuleRecord snapshots (正文) and
+    crystallize crystals (摘要) for each relevant phase.
+    """
+    parts = []
+    parts.append(f"# Module Review: {module}\n")
+    if target_phase:
+        parts.append(f"**Target Phase**: {target_phase}\n")
+    parts.append("")
+
+    phases_to_collect = [target_phase] if target_phase else ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]
+
+    for phase in phases_to_collect:
+        # ModuleRecord snapshots (正文)
+        records = store.get_active_crystals(
+            project_id=project_id,
+            crystal_type="ModuleRecord",
+            layer=phase,
+            module=module,
+        )
+        if not records:
+            continue
+
+        parts.append(f"\n## Phase {phase} — ModuleRecord Snapshot\n")
+        parts.append(f"**Records found**: {len(records)}\n")
+        for rec in records:
+            parts.append(_format_module_record_content(rec))
+
+        # Summary crystals (摘要)
+        ctypes = _PHASE_CRYSTAL_FALLBACK.get(phase, ["ContractCrystal"])
+        for ct in ctypes:
+            try:
+                crystals = store.get_active_crystals(
+                    project_id=project_id,
+                    crystal_type=ct,
+                    module=module,
+                )
+                if crystals:
+                    parts.append(f"\n### [摘要] {ct}\n")
+                    for c in crystals:
+                        c_content = c.get("content", {})
+                        if not isinstance(c_content, dict):
+                            c_content = {}
+                        formatted = _format_crystal_for_review(c_content, ct, f"{ct}")
+                        parts.append(formatted)
+                        parts.append("")
+            except Exception:
+                continue
+
+        parts.append("\n---\n")
+
+    return "\n".join(parts)
+
+
+def execute_cross_module_review(
+    project_id: str = "",
+    target_module: str = "",
+    target_phase: str = "",
+    prompt_hint: str = "",
+) -> str:
+    """Mode 4: Cross-module review — audit completed work on a module.
+
+    Supports two sub-modes:
+    - Nitpick (挑刺): specify target_phase for deep single-phase review
+    - Check (检查): omit target_phase to review all completed phases
+
+    Args:
+        project_id: Project identifier.
+        target_module: Module to review (required).
+        target_phase: Specific phase to review (optional — if empty, reviews all).
+        prompt_hint: Optional user guidance for the review LLM.
+
+    Returns:
+        Markdown review report.
+    """
+    from src import state
+
+    store = state.crystal_store
+    if not store:
+        return "Error: CrystalStore is not initialized."
+
+    pid = project_id.strip() if project_id else ""
+    if not pid and state.active_project:
+        pid = state.active_project.get("project_id", "")
+    if not pid:
+        return "Error: No project_id specified and no active project."
+
+    tmod = target_module.strip()
+    if not tmod:
+        return "Error: target_module is required for cross-module review."
+
+    tphase = target_phase.strip() if target_phase else ""
+
+    data_text = _collect_module_data_for_review(store, pid, tmod, tphase)
+    if not data_text.strip() or "## Phase" not in data_text:
+        available = []
+        for ph in ["L1", "L2", "L3", "L4", "L6", "L7", "L8"]:
+            recs = store.get_active_crystals(
+                project_id=pid, crystal_type="ModuleRecord", layer=ph, module=tmod
+            )
+            if recs:
+                available.append(ph)
+        if available:
+            return (
+                f"No data found for module '{tmod}'"
+                + (f" at phase {tphase}" if tphase else "")
+                + f". Available phases: {', '.join(available)}."
+            )
+        return (
+            f"No completed work found for module '{tmod}' in project '{pid}'. "
+            f"Complete some phases and create snapshots via request_approval first."
+        )
+
+    config = _read_config()
+    api_key = config.get("api_key", "")
+    base_url = config.get("base_url", "")
+    model = config.get("model", "")
+
+    mode_label = f"挑刺审查 @ {tphase}" if tphase else "全面检查"
+    dry_run_header = (
+        f"# 跨模块审查 — Dry Run (no LLM)\n\n"
+        f"**Project**: {pid}  |  **Module**: {tmod}"
+        + (f"  |  **Phase**: {tphase}" if tphase else "")
+        + f"  |  **Mode**: {mode_label}\n\n---\n\n"
+    )
+
+    if not api_key:
+        return dry_run_header + data_text
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, base_url=base_url or None)
+        user_prompt = data_text
+        if prompt_hint:
+            user_prompt += f"\n\n## Reviewer Guidance\n{prompt_hint}\n"
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _REVIEW_CROSS_MODULE_SYSTEM},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            stream=False,
+        )
+        review_text = (response.choices[0].message.content or "").strip()
+        if not review_text:
+            return "Error: LLM returned empty response.\n\n" + data_text
+
+        return (
+            f"# 跨模块审查 (Cross-Module Review)\n\n"
+            f"**Project**: {pid}  |  **Module**: {tmod}"
+            + (f"  |  **Phase**: {tphase}" if tphase else "")
+            + f"  |  **Mode**: {mode_label}\n\n"
+            f"---\n\n{review_text}"
+        )
+    except Exception as e:
+        return f"Error: Cross-module review failed: {e}\n\n{data_text}"
+
+
 # ── Mode dispatch ───────────────────────────────────────────────────────────
 
 def execute_mode(
@@ -977,20 +1195,27 @@ def execute_mode(
     phase: str = "",
     module: str = "",
     prompt_hint: str = "",
+    target_module: str = "",
+    target_phase: str = "",
 ) -> str:
     """Dispatch to the appropriate review mode.
 
     Args:
         mode: "contract_consistency" / "single_step_critique" / "iteration_drift"
-              Supports Chinese aliases: "契约一致性检查" / "单步挑刺检查" / "迭代脱节检查"
+              / "cross_module_review"
+              Supports Chinese aliases.
         project_id: Project identifier.
-        phase: Phase (used by single_step_critique).
+        phase: Phase (used by single_step_critique, cross_module_review).
         module: Module filter.
         prompt_hint: Optional user guidance injected into the review prompt.
+        target_module: Module to review (cross_module_review only).
+        target_phase: Specific phase to review (cross_module_review only).
 
     Returns:
         Markdown review report.
     """
+    if not mode:
+        return "Error: mode is required. Choose from: contract_consistency, single_step_critique, iteration_drift, cross_module_review."
     mode_lower = mode.lower().replace(" ", "_")
     if mode_lower in (
         "contract_consistency", "contract", "consistency",
@@ -1007,10 +1232,15 @@ def execute_mode(
         "迭代脱节检查", "脱节检查", "脱节", "迭代脱节",
     ):
         return execute_iteration_drift(project_id, module, prompt_hint)
+    elif mode_lower in (
+        "cross_module_review", "cross_module", "module_review",
+        "跨模块审查", "模块审查",
+    ):
+        return execute_cross_module_review(project_id, target_module, target_phase, prompt_hint)
     else:
         return (
             f"Unknown review mode: '{mode}'. "
-            f"Valid modes: contract_consistency, single_step_critique, iteration_drift.\n"
+            f"Valid modes: contract_consistency, single_step_critique, iteration_drift, cross_module_review.\n"
             f"Falling back to general review.\n\n"
             f"{execute(project_id, phase, module)}"
         )

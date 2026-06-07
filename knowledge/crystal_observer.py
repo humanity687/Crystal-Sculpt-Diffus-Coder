@@ -20,7 +20,7 @@ import sys
 VALID_CRYSTAL_TYPES = {
     "ArchCrystal", "ModMap", "ContractCrystal", "LogicCrystal",
     "SkeletonCrystal", "ImplCrystal", "TraceCrystal", "ModuleRecord",
-    "ExperienceCrystal",
+    "ExperienceCrystal", "ProjectReport",
 }
 
 # Required fields per crystal type for content schema validation
@@ -34,6 +34,7 @@ CRYSTAL_REQUIRED_FIELDS = {
     "TraceCrystal": ("symptom", "root_cause", "fix"),
     "ModuleRecord": ("record_type",),
     "ExperienceCrystal": ("title", "summary"),
+    "ProjectReport": ("title", "report_markdown"),
 }
 
 EXTRACTION_PROMPT = """你是一个结晶提取探针。分析以下对话回合，判断 Agent 是否产出了值得结晶的工程结构化产物。

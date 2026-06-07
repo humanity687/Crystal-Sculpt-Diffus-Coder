@@ -5,14 +5,15 @@ Crystal-Sculpt-Diffus-Coder is distributed in the hope that it will be useful, b
 You should have received a copy of the GNU Affero General Public License along with Crystal-Sculpt-Diffus-Coder.  If not, see <https://www.gnu.org/licenses/>.
 -->
 
-### crystallize — Crystal Management (store / find)
+### crystallize — Crystal Management (store / adjust / find)
 
-Persist structured engineering artifacts into the crystal memory system and search for existing crystals. Call `store` at the completion of each skill layer (after user approval). Call `find` to locate existing crystals by type, module, layer, or semantic similarity.
+Persist structured engineering artifacts into the crystal memory system and search for existing crystals. Call `store` at the completion of each skill layer (after user approval). Call `adjust` to replace an existing crystal (e.g. after L3.1 renegotiation). Call `find` to locate existing crystals by type, module, layer, or semantic similarity.
 
 **Parameters:**
 - `command` (string, optional, default `"store"`): Which operation to perform.
-  - `"store"` — Store a new crystal.
-  - `"find"`  — Search for existing crystals.
+  - `"store"`  — Store a new crystal.
+  - `"adjust"` — Replace an existing crystal (deprecate old + create new with bumped version).
+  - `"find"`   — Search for existing crystals.
 
 ---
 
@@ -58,6 +59,29 @@ ExperienceCrystals are automatically marked as persistent and embedded into the 
 **When NOT to use:**
 - Before the user has approved the current layer's output
 - For temporary or speculative content
+
+---
+
+#### adjust
+
+Replace an existing crystal with updated content. The old crystal is deprecated (soft-deleted) and a new one is created with a bumped version number (v1.0→v2.0, v2.0→v3.0, etc.).
+
+- `crystal_type` (string, required): Crystal type of the existing crystal to replace.
+- `module` (string, required): Module name of the existing crystal.
+- `name` (string, required): Name of the existing crystal to replace.
+- `content` (string, required): New JSON content — completely replaces the old content.
+
+**When to use:**
+- After L3.1 contract renegotiation — replace the old ContractCrystal with the revised one
+- After fixing a bug at L8 and revising the ImplCrystal
+- After phase rollback — replace the rolled-back crystal with the revised version
+- Any time a previously stored crystal needs its content updated
+
+The natural key (type + project + module + name) must match an existing active crystal. Use `find` first to confirm the exact name if unsure.
+
+**When NOT to use:**
+- For brand new crystals — use `store` instead
+- To add a different crystal for the same module — use `store` with a different name
 
 ---
 

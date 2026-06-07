@@ -22,8 +22,8 @@ Crystal-Sculpt-Diffus-Coder is a Flask web app that provides a chat interface fo
 
 ### Core flow
 
-1. **`src/app.py`** — Entry point. Creates the Flask app, registers blueprints, initializes two `Crystal-Sculpt-Diffus-Coder` instances (`chat_agent` and `tasks_agent`), and starts the Cloudflare tunnel in a background thread.
-2. **`src/agent.py`** — The `Crystal-Sculpt-Diffus-Coder` class. Wraps an OpenAI-compatible client, manages the message history, and implements a streaming generator (`input()`) that yields text chunks and tool-call events. Uses a two-level loop: an outer `while restart` loop (re-builds context on state changes) wrapping an inner tool-calling loop (call model → if tool_calls, execute tools → send results back → repeat until no more tool calls). `_build_context()` is re-invoked on every restart iteration to pick up fresh crystal/phase state.
+1. **`src/app.py`** — Entry point. Creates the Flask app, registers blueprints, initializes two `BaseAgent` instances (`chat_agent` and `tasks_agent`), and starts the Cloudflare tunnel in a background thread.
+2. **`src/agent.py`** — The `BaseAgent` class. Wraps an OpenAI-compatible client, manages the message history, and implements a streaming generator (`input()`) that yields text chunks and tool-call events. Uses a two-level loop: an outer `while restart` loop (re-builds context on state changes) wrapping an inner tool-calling loop (call model → if tool_calls, execute tools → send results back → repeat until no more tool calls). `_build_context()` is re-invoked on every restart iteration to pick up fresh crystal/phase state.
 3. **`src/state.py`** — Shared mutable state: the two agent instances, a `pending_confirmations` dict keyed by `confirm_id`, the `active_project` dict (set by `set_project` tool, read by agent context methods), the shared `CrystalStore` instance, and `load_config()`/`save_config()` helpers that read/write `config.json`.
 
 ### Request lifecycle (chat)
@@ -42,7 +42,7 @@ Crystal-Sculpt-Diffus-Coder is a Flask web app that provides a chat interface fo
 
 All tools are invoked through a single `tools` function registered as `tool_functions["tools"]` and declared as the only tool in `tools_metadata`. The model calls `tools(tool_name="xxx", arguments={...})`, and the loader dispatches to the appropriate handler.
 
-- **Built-in tools** live in `knowledge/tools/<name>/`. Each tool is a directory with a `tool.py` that exports `execute(**kwargs) -> str` and a `README.md` that becomes part of the knowledge base. Loaded by `knowledge/loader.py` → `load_builtin_tools()`. Current tools: `read`, `write`, `command`, `search`, `time`, `add_skill`, `set_project`, `crystallize`, `dependency`, `recall`.
+- **Built-in tools** live in `knowledge/tools/<name>/`. Each tool is a directory with a `tool.py` that exports `execute(**kwargs) -> str` and a `README.md` that becomes part of the knowledge base. Loaded by `knowledge/loader.py` → `load_builtin_tools()`. Current tools: `read`, `write`, `command`, `search`, `time`, `add_skill`, `set_project`, `crystallize`, `dependency`, `recall`, `request_approval`, `archive_project`, `review_approval`.
 - **`set_project`** — Activates the crystal-aware engineering context. Takes `project_id`, `phase` (L0-L8, L3.1), and optional `module`. Writes `state.active_project`, which enables phase-aware crystal context injection in subsequent turns.
 - **`crystallize`** — Crystal management with two sub-commands:
   - `store` (default): Stores a thought crystal into CrystalStore. Takes `crystal_type`, `module`, `name`, and `content` (JSON string). Requires an active project.
@@ -57,7 +57,7 @@ All tools are invoked through a single `tools` function registered as `tool_func
 
 ### Knowledge base (Two-Level Summary Memory)
 
-Crystal-Sculpt-Diffus-Coder uses a two-level summary memory system that replaces the old "full-text RAG" approach:
+The project uses a two-level summary memory system that replaces the old "full-text RAG" approach:
 
 - **Level 1 — Summary index**: Only structured summaries are embedded and indexed in the vector DB. The `search()` function returns `list[dict]` with `memory_id`, `text`, `type`, `score`, `title`, `icon` for each result. Summaries are formatted in context with `memory_id` references so the model can call `recall(memory_id="...")` to fetch full details.
 - **Level 2 — Recall tool**: `knowledge/tools/recall/tool.py` — `execute(memory_id, query?, lines?)` fetches original full-text content from disk by its `memory_id`. Only accesses files under `knowledge/`. Default return limit: 8000 chars.
@@ -65,7 +65,7 @@ Crystal-Sculpt-Diffus-Coder uses a two-level summary memory system that replaces
 **Summary types and weights:**
 | Type | Weight | Description |
 |------|--------|-------------|
-| `conversation_summary` | 0.15 | Conversation turn summary (LLM-generated or extractive) |
+| `conversation_summary` | 0.3 | Conversation turn summary (LLM-generated or extractive) |
 | `tool_summary` | 1.0 | Tool documentation summary (from README or summary.json) |
 | `skill_summary` | 0.8 | Skill documentation summary (from skill .md or summary.json) |
 | `hyw` (legacy) | 1.0 | Other documentation — full-text indexed |
@@ -124,7 +124,7 @@ Document types affect retrieval weight: `tool` = 1.0, `skill` = 0.8, `conversati
 
 `knowledge/tools/dependency/tool.py` — Built-in tool wrapping the algorithms. `define` is the primary entry point (agent declares modules+dependencies directly). `analyze` is the fallback (reads ModMap crystals). Both store a `DependencyGraphCrystal`. `recommend` and `impact` query the stored crystal.
 
-`knowledge/crystal_observer.py` — `CrystalObserver` class. Auto-extracts crystals from conversation turns using a lightweight LLM probe (temperature=0.1, stream=False). Only activates when `state.active_project` is set. Called from `Crystal-Sculpt-Diffus-Coder.input()` at turn completion. Failures are silently caught — never blocks the chat flow.
+`knowledge/crystal_observer.py` — `CrystalObserver` class. Auto-extracts crystals from conversation turns using a lightweight LLM probe (temperature=0.1, stream=False). Only activates when `state.active_project` is set. Called from `BaseAgent.input()` at turn completion. Failures are silently caught — never blocks the chat flow.
 
 **Activation flow:**
 1. Agent calls `set_project(project_id, phase, module)` → writes `state.active_project`
@@ -146,7 +146,7 @@ Document types affect retrieval weight: `tool` = 1.0, `skill` = 0.8, `conversati
 ### Key behaviors
 
 - **Loop restart mechanism**: `input()` wraps the tool-calling loop in a `while restart` outer loop. When `set_project` changes `state.active_project` or `request_approval` is approved, `restart = True` triggers a new iteration that re-calls `_build_context()` and `_get_relevant_knowledge()` with fresh phase/crystal state. A `first_entry` flag prevents duplicate user message appending. On restart, a `context_restart` SSE event is sent so the frontend creates a new assistant bubble. Max 3 restarts per request.
-- **Context compression (v2 — hierarchical safety)**: When the API returns a context-length error, `Crystal-Sculpt-Diffus-Coder.memory()` uses a multi-tier strategy:
+- **Context compression (v2 — hierarchical safety)**: When the API returns a context-length error, `BaseAgent.memory()` uses a multi-tier strategy:
   1. **Skill-safe cut** (`_find_skill_safe_cut_index`): Scans `message_meta` to build atomic intervals from approval chains (L3→L7, tracked via `chain_id`) and tool_call/tool_result pairs. The cut point must not fall inside any interval — an entire chain is kept or dropped as a unit.
   2. **Archive to free space**: If no safe cut exists, `_archive_completed_modules()` replaces completed module chains with summary messages, then retries.
   3. **Original tool-pair fallback** (`_find_safe_cut_index`): Legacy protection that only prevents breaking (tool_call, tool_result) pairs.

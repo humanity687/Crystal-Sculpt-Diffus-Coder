@@ -135,7 +135,7 @@ def chat():
                     notice = state.phase_rollback_notice
                     # Also fetch the last contract for the module to show in the notice
                     contract_info = None
-                    if notice.get("module") and state.chat_agent and state.chat_agent.crystal_store:
+                    if notice.get("module") and state.active_project and state.chat_agent and state.chat_agent.crystal_store:
                         contracts = state.chat_agent.crystal_store.get_active_crystals(
                             project_id=state.active_project.get("project_id", ""),
                             crystal_type="ContractCrystal",
@@ -420,6 +420,59 @@ def chat():
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
+
+@chat_bp.route("/api/completed_modules", methods=["GET"])
+@login_required
+def completed_modules():
+    """
+    Return a list of modules with their completed phases for the active project.
+
+    Query param: project_id (optional, defaults to active project).
+    """
+    project_id = request.args.get("project_id", "").strip()
+    if not project_id and state.active_project:
+        project_id = state.active_project.get("project_id", "")
+    if not project_id:
+        return jsonify({"error": "No active project and no project_id provided"}), 400
+
+    if not state.journal:
+        return jsonify({"error": "Journal not initialized"}), 503
+
+    all_progress = state.journal.get_all_module_progress(project_id)
+
+    PHASE_FIELDS = ["l1_done_at", "l2_done_at", "l3_done_at", "l3_1_done_at",
+                    "l4_done_at", "l5_done_at", "l6_done_at", "l7_done_at"]
+    PHASE_LABELS = ["L1", "L2", "L3", "L3.1", "L4", "L5", "L6", "L7"]
+
+    modules = []
+    for mp in all_progress:
+        completed = []
+        for field, label in zip(PHASE_FIELDS, PHASE_LABELS):
+            if mp.get(field):
+                completed.append(label)
+        if completed:
+            modules.append({
+                "module": mp.get("module", ""),
+                "current_phase": mp.get("current_phase", ""),
+                "completed_phases": completed,
+                "l1_done_at": mp.get("l1_done_at", ""),
+                "l2_done_at": mp.get("l2_done_at", ""),
+                "l3_done_at": mp.get("l3_done_at", ""),
+                "l3_1_done_at": mp.get("l3_1_done_at", ""),
+                "l4_done_at": mp.get("l4_done_at", ""),
+                "l5_done_at": mp.get("l5_done_at", ""),
+                "l6_done_at": mp.get("l6_done_at", ""),
+                "l7_done_at": mp.get("l7_done_at", ""),
+                "l8_incidents": mp.get("l8_incidents", 0),
+                "status": mp.get("status", "active"),
+            })
+
+    return jsonify({
+        "project_id": project_id,
+        "modules": modules,
+    })
+
+
 @chat_bp.route("/api/confirm_tool", methods=["POST"])
 @login_required
 def confirm_tool():
@@ -489,21 +542,38 @@ def read_file():
 @chat_bp.route("/api/compress", methods=["POST"])
 @login_required
 def compress():
-    """Manually trigger context compression using the same multi-tier algorithm
-    as the reactive (context-length-driven) compression."""
+    """Manually trigger context compression.
+
+    Accepts JSON body: {"mode": "safe"|"modular"|"full"} (default "safe").
+    - safe: multi-tier safe-cut algorithm (memory())
+    - modular: archive each completed module in-place (modular_compress())
+    - full: replace all non-system messages with one LLM summary (full_compress())
+    """
     agent = state.chat_agent
     if agent is None:
         return jsonify({"error": "Agent not initialized"}), 503
 
-    before = len(agent.messages)
-    agent.memory()
-    after = len(agent.messages)
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    mode = str(body.get("mode", "safe")).lower()
 
-    return jsonify({
-        "success": True,
-        "cut_messages": before - after,
-        "remaining_messages": after,
-    })
+    if mode == "full":
+        result = agent.full_compress()
+        return jsonify({"success": True, **result})
+    elif mode == "modular":
+        result = agent.modular_compress()
+        return jsonify({"success": True, **result})
+    else:
+        before = len(agent.messages)
+        agent.memory()
+        after = len(agent.messages)
+        return jsonify({
+            "success": True,
+            "cut_messages": before - after,
+            "remaining_messages": after,
+        })
 
 
 _SENSITIVE_FILENAMES = {
@@ -572,6 +642,8 @@ def run_review():
     phase = data.get("phase", "").strip()
     module = data.get("module", "").strip()
     prompt_hint = data.get("prompt_hint", "").strip()
+    target_module = data.get("target_module", "").strip()
+    target_phase = data.get("target_phase", "").strip()
 
     # Fallback to active project if not specified
     if not project_id and state.active_project:
@@ -591,7 +663,11 @@ def run_review():
     review_execute_mode = _mod.execute_mode
 
     try:
-        report = review_execute_mode(mode, project_id, phase, module, prompt_hint)
+        report = review_execute_mode(
+            mode, project_id=project_id, phase=phase, module=module,
+            prompt_hint=prompt_hint,
+            target_module=target_module, target_phase=target_phase,
+        )
         return jsonify({"status": "ok", "report": report})
     except Exception as e:
         import traceback

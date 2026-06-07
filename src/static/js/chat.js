@@ -20,6 +20,109 @@ let currentCrystalItems = [];
 let currentCrystalBlock = null;
 let sessionTotalTokens = 0;
 
+// ── Lazy loading ──────────────────────────────────────────────────────────
+const MESSAGE_RENDER_LIMIT = 50;
+const MESSAGE_TRIM_THRESHOLD = 80;  // trim when exceeding this many DOM nodes
+let _hiddenMessages = [];            // {domEl} — removed from DOM, restorable
+
+function _trimMessagesIfNeeded() {
+  const children = chatMessages.children;
+  if (children.length <= MESSAGE_TRIM_THRESHOLD) return;
+
+  // Count how many to hide (keep last MESSAGE_RENDER_LIMIT)
+  const toHide = children.length - MESSAGE_RENDER_LIMIT;
+
+  // Collect the oldest non-temporary messages to hide
+  const hidden = [];
+  let taken = 0;
+  for (let i = 0; i < children.length && taken < toHide; i++) {
+    const el = children[i];
+    // Skip temporary/streaming messages, token bar, knowledge/crystal blocks, compression notices
+    if (el.classList.contains("temp") ||
+        el.classList.contains("token-usage-bar") ||
+        el.classList.contains("knowledge-block") ||
+        el.classList.contains("crystal-block") ||
+        el.classList.contains("compression-notice")) {
+      continue;
+    }
+    hidden.push(el);
+    taken++;
+  }
+
+  // Remove from DOM
+  for (const el of hidden) {
+    el.remove();
+  }
+  _hiddenMessages = hidden.concat(_hiddenMessages);  // prepend
+
+  // Show "load more" indicator
+  _showLoadMoreButton();
+}
+
+function _showLoadMoreButton() {
+  // Remove existing button if any
+  const existing = chatMessages.querySelector(".load-more-btn");
+  if (existing) existing.remove();
+
+  const btn = document.createElement("button");
+  btn.className = "load-more-btn";
+  btn.textContent = `↑ 加载更早的消息 (${_hiddenMessages.length} 条已隐藏)`;
+  btn.addEventListener("click", () => {
+    // Restore a batch of hidden messages
+    const batch = _hiddenMessages.splice(0, 20);
+    const firstChild = chatMessages.firstChild;
+    for (const el of batch.reverse()) {
+      chatMessages.insertBefore(el, firstChild);
+    }
+    if (_hiddenMessages.length === 0) {
+      btn.remove();
+    } else {
+      btn.textContent = `↑ 加载更早的消息 (${_hiddenMessages.length} 条已隐藏)`;
+    }
+  });
+
+  chatMessages.insertBefore(btn, chatMessages.firstChild);
+}
+
+// ── Scroll-aware new message indicator ────────────────────────────────────
+let _newMessagePending = false;
+let _newMessageIndicator = null;
+
+function _onNewMessageWhileScrolledUp() {
+  if (isUserAtBottom()) {
+    _newMessagePending = false;
+    if (_newMessageIndicator) {
+      _newMessageIndicator.remove();
+      _newMessageIndicator = null;
+    }
+    return;
+  }
+  if (_newMessagePending) return;
+  _newMessagePending = true;
+
+  if (!_newMessageIndicator) {
+    _newMessageIndicator = document.createElement("button");
+    _newMessageIndicator.className = "new-msg-indicator";
+    _newMessageIndicator.textContent = "↓ 新消息";
+    _newMessageIndicator.addEventListener("click", () => {
+      scrollToBottom();
+      _newMessagePending = false;
+      _newMessageIndicator.remove();
+      _newMessageIndicator = null;
+    });
+    document.body.appendChild(_newMessageIndicator);
+  }
+}
+
+// Watch scroll to clear the indicator when user scrolls to bottom
+chatMessages.addEventListener("scroll", () => {
+  if (isUserAtBottom() && _newMessageIndicator) {
+    _newMessagePending = false;
+    _newMessageIndicator.remove();
+    _newMessageIndicator = null;
+  }
+});
+
 /**
  * Check whether the user is currently scrolled near the bottom of the chat.
  * @returns {boolean}
@@ -34,9 +137,13 @@ function isUserAtBottom() {
 /**
  * Scroll the chat container to the very bottom immediately.
  */
-function scrollToBottom() {
+function scrollToBottom(force = false) {
   const el = window.chatMessages;
   if (!el) return;
+  if (!force && !isUserAtBottom()) {
+    _onNewMessageWhileScrolledUp();
+    return;
+  }
   el.scrollTo({
     top: el.scrollHeight,
     behavior: "smooth",
@@ -1020,7 +1127,10 @@ function addMessage(
     msgDiv.textContent = content;
   }
   chatMessages.appendChild(msgDiv);
-  if (!temporary) saveMessagesToLocalStorage();
+  if (!temporary) {
+    saveMessagesToLocalStorage();
+    _trimMessagesIfNeeded();
+  }
   return msgDiv;
 }
 
@@ -1328,36 +1438,97 @@ messageInput.addEventListener("keydown", (e) => {
   if (e.ctrlKey && e.key === "Enter") sendMessage();
 });
 
-// Manual context compression button
+// Manual context compression button — shows mode selection popup
 const compressBtn = document.getElementById("compress-btn");
 if (compressBtn) {
-  compressBtn.addEventListener("click", async () => {
+  compressBtn.addEventListener("click", () => {
     if (isGenerating) return;
-    compressBtn.disabled = true;
-    try {
-      const resp = await fetchWithAuth("/api/compress", { method: "POST" });
-      const data = await resp.json();
-      if (data.success && data.cut_messages > 0) {
-        const msg = t("chat.compress_done", {
-          cut: data.cut_messages,
-          remaining: data.remaining_messages,
-        });
-        addMessage("system", msg, false, "compression-notice", true);
-        scrollToBottom();
-      } else if (data.success) {
-        addMessage("system", t("chat.compress_nothing"), false, "compression-notice", true);
-        scrollToBottom();
-      } else {
-        addMessage("system", "Compression failed: " + (data.error || "unknown"), false, "compression-notice", true);
-        scrollToBottom();
-      }
-    } catch (e) {
-      addMessage("system", "Compression failed: " + e.message, false, "compression-notice", true);
-      scrollToBottom();
-    } finally {
-      compressBtn.disabled = false;
-    }
+    showCompressModePopup();
   });
+}
+
+async function doCompress(mode) {
+  compressBtn.disabled = true;
+  try {
+    const resp = await fetchWithAuth("/api/compress", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: mode }),
+    });
+    const data = await resp.json();
+    if (data.success && data.cut_messages > 0) {
+      let msg = t("chat.compress_done", {
+        cut: data.cut_messages,
+        remaining: data.remaining_messages,
+      });
+      if (data.archived_modules && data.archived_modules.length > 0) {
+        const names = data.archived_modules.map((m) => m.module).join(", ");
+        msg += "\n" + "📦 " + t("chat.compress_archived", { modules: names });
+      }
+      addMessage("system", msg, false, "compression-notice", true);
+      scrollToBottom();
+    } else if (data.success) {
+      const reasonMsg = (data.archived_modules && data.archived_modules.length === 0)
+        ? t("chat.compress_nothing")
+        : t("chat.compress_no_effect");
+      addMessage("system", reasonMsg, false, "compression-notice", true);
+      scrollToBottom();
+    } else {
+      addMessage("system", "Compression failed: " + (data.error || "unknown"), false, "compression-notice", true);
+      scrollToBottom();
+    }
+  } catch (e) {
+    addMessage("system", "Compression failed: " + e.message, false, "compression-notice", true);
+    scrollToBottom();
+  } finally {
+    compressBtn.disabled = false;
+  }
+}
+
+function showCompressModePopup() {
+  const { overlay, card, close } = createModalOverlay();
+  card.className = "modal-card compress-mode-card";
+
+  const title = document.createElement("div");
+  title.className = "modal-title compress-mode-title";
+  title.textContent = "🗜️ " + (t("compress.mode_title") || "选择压缩模式");
+  card.appendChild(title);
+
+  const desc = document.createElement("div");
+  desc.className = "compress-mode-desc";
+  desc.textContent = t("compress.mode_desc") || "安全压缩保护审批链完整性；模块归档将已完成模块逐一替换为摘要；全量压缩合成为一条综合摘要。";
+  card.appendChild(desc);
+
+  const btnCol = document.createElement("div");
+  btnCol.className = "compress-mode-btn-col";
+
+  const safeBtn = document.createElement("button");
+  safeBtn.className = "btn-review compress-mode-safe";
+  safeBtn.textContent = "🔒 " + (t("compress.mode_safe") || "安全压缩");
+  safeBtn.addEventListener("click", () => { close(); doCompress("safe"); });
+
+  const modularBtn = document.createElement("button");
+  modularBtn.className = "btn-review compress-mode-modular";
+  modularBtn.textContent = "📋 " + (t("compress.mode_modular") || "模块归档");
+  modularBtn.addEventListener("click", () => { close(); doCompress("modular"); });
+
+  const fullBtn = document.createElement("button");
+  fullBtn.className = "btn-review compress-mode-full";
+  fullBtn.textContent = "📦 " + (t("compress.mode_full") || "全量压缩");
+  fullBtn.addEventListener("click", () => { close(); doCompress("full"); });
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "confirm-cancel";
+  cancelBtn.textContent = t("review.cancel") || "取消";
+  cancelBtn.addEventListener("click", close);
+
+  btnCol.appendChild(safeBtn);
+  btnCol.appendChild(modularBtn);
+  btnCol.appendChild(fullBtn);
+  card.appendChild(btnCol);
+  card.appendChild(cancelBtn);
+
+  document.body.appendChild(overlay);
 }
 
 // Automatic code highlighting
@@ -1597,6 +1768,13 @@ function handleApprovalRequired(msgDiv, data) {
   if (!Array.isArray(files)) files = [];
   const fileContents = data.file_contents || {};
 
+  // ── Cross-module review data ──
+  const targetModule = data.target_module || "";
+  const targetPhase = data.target_phase || "";
+  const originalContent = data.original_content || "";
+  const originalFiles = data.original_files || [];
+  const originalFileContents = data.original_file_contents || {};
+
   // Clean up any existing modal
   const existing = document.querySelector(".modal-overlay");
   if (existing) {
@@ -1613,7 +1791,10 @@ function handleApprovalRequired(msgDiv, data) {
     setTimeout(() => existingWrapper.remove(), 250);
   }
 
-  const panel = new ApprovalPanel(phase, module, content, files, fileContents);
+  const panel = new ApprovalPanel(
+    phase, module, content, files, fileContents,
+    targetModule, targetPhase, originalContent, originalFiles, originalFileContents
+  );
 
   panel.onApprove(async () => {
     try {
@@ -1660,13 +1841,24 @@ class ApprovalPanel {
    * @param {string} content - Markdown approval request body
    * @param {string[]} files - Attachment file paths
    * @param {Object} fileContents - Map of file path to content
+   * @param {string} targetModule - Cross-module review target module
+   * @param {string} targetPhase - Cross-module review target phase
+   * @param {string} originalContent - Original snapshot Markdown content
+   * @param {string[]} originalFiles - Original snapshot file paths
+   * @param {Object} originalFileContents - Original snapshot file contents
    */
-  constructor(phase, module, content, files, fileContents) {
+  constructor(phase, module, content, files, fileContents,
+              targetModule, targetPhase, originalContent, originalFiles, originalFileContents) {
     this.phase = phase;
     this.module = module;
     this.content = content;
     this.files = files || [];
     this.fileContents = fileContents || {};
+    this.targetModule = targetModule || "";
+    this.targetPhase = targetPhase || "";
+    this.originalContent = originalContent || "";
+    this.originalFiles = originalFiles || [];
+    this.originalFileContents = originalFileContents || {};
     this._approveCallback = null;
     this._rejectCallback = null;
     this._confirmed = false;
@@ -1706,6 +1898,20 @@ class ApprovalPanel {
     });
     header.appendChild(closeBtn);
     card.appendChild(header);
+
+    // ── Cross-module review context indicator ──
+    if (this.targetModule) {
+      const reviewCtx = document.createElement("div");
+      reviewCtx.className = "modal-review-context";
+      const label = (typeof t !== "undefined" && t("review.reviewing_module")) || "Reviewing:";
+      reviewCtx.innerHTML =
+        '<span class="review-badge-icon">&#128203;</span>' +
+        '<span class="review-badge-label">' + label +
+        ' <strong>' + this._esc(this.targetModule) + '</strong>' +
+        (this.targetPhase ? ' @ ' + this._esc(this.targetPhase) : '') +
+        '</span>';
+      card.appendChild(reviewCtx);
+    }
 
     // ── Body: full Markdown rendering ──
     const body = document.createElement("div");
@@ -1754,6 +1960,62 @@ class ApprovalPanel {
 
       attachDiv.appendChild(attachBody);
       card.appendChild(attachDiv);
+    }
+
+    // ── Original Snapshot (cross-module review) ──
+    if (this.originalContent) {
+      const origSection = document.createElement("div");
+      origSection.className = "modal-original-section";
+
+      const origToggle = document.createElement("div");
+      origToggle.className = "modal-original-toggle";
+      const snapLabel = (typeof t !== "undefined" && t("review.original_snapshot")) || "Original Snapshot";
+      origToggle.innerHTML = "&#128196; " + snapLabel +
+        " (" + this._esc(this.targetModule) +
+        (this.targetPhase ? " @ " + this._esc(this.targetPhase) : "") + ")";
+      origSection.appendChild(origToggle);
+
+      const origBody = document.createElement("div");
+      origBody.className = "modal-original-body";
+      origBody.style.display = "none";
+
+      const origContentDiv = document.createElement("div");
+      origContentDiv.className = "modal-original-content";
+      renderFullMarkdown(origContentDiv, this.originalContent);
+      origBody.appendChild(origContentDiv);
+
+      if (this.originalFiles.length > 0) {
+        for (var oi = 0; oi < this.originalFiles.length; oi++) {
+          const ofpath = this.originalFiles[oi];
+          const fblock = document.createElement("div");
+          fblock.className = "modal-attach-file";
+          const fname = document.createElement("div");
+          fname.className = "modal-attach-name";
+          fname.textContent = ofpath;
+          fblock.appendChild(fname);
+          const fcontent = document.createElement("pre");
+          fcontent.className = "modal-attach-content";
+          const code = document.createElement("code");
+          code.textContent = this.originalFileContents[ofpath] || "[Could not read file]";
+          fcontent.appendChild(code);
+          fblock.appendChild(fcontent);
+          origBody.appendChild(fblock);
+        }
+      }
+
+      origSection.appendChild(origBody);
+
+      origToggle.addEventListener("click", function () {
+        const show = origBody.style.display === "none";
+        origBody.style.display = show ? "block" : "none";
+        origToggle.innerHTML = (show ? "&#128193;" : "&#128196;") + " " + snapLabel +
+          " (" + origSection._esc_target + ")" +
+          (show ? " (expanded)" : "");
+      });
+      origSection._esc_target = this._esc(this.targetModule) +
+        (this.targetPhase ? " @ " + this._esc(this.targetPhase) : "");
+
+      card.appendChild(origSection);
     }
 
     // ── Footer: Approve / Reject ──
@@ -1827,13 +2089,21 @@ class ApprovalPanel {
       this.sendRejectBtn.disabled = this.rejectTextarea.value.trim() === "";
     });
 
-    this.sendRejectBtn.addEventListener("click", () => {
+    this.sendRejectBtn.addEventListener("click", async () => {
       const reason = this.rejectTextarea.value.trim();
       if (!reason || this._confirmed) return;
       this._confirmed = true;
       this.sendRejectBtn.disabled = true;
       this.rejectTextarea.disabled = true;
-      if (this._rejectCallback) this._rejectCallback(reason);
+      try {
+        if (this._rejectCallback) await this._rejectCallback(reason);
+      } catch (e) {
+        console.error("Rejection callback failed", e);
+        this.sendRejectBtn.disabled = false;
+        this.rejectTextarea.disabled = false;
+        this._confirmed = false;
+        return;
+      }
       this._closeModal();
     });
   }
@@ -2279,6 +2549,11 @@ const REVIEW_MODES = {
     icon: "⚖️",
     apiMode: "iteration_drift",
   },
+  cross_module_review: {
+    label: "跨模块审查",
+    icon: "📋",
+    apiMode: "cross_module_review",
+  },
 };
 
 function showReviewPromptModal(modeKey) {
@@ -2384,9 +2659,10 @@ function showReviewPromptModal(modeKey) {
   }, 300);
 }
 
-function triggerReview(modeKey, promptHint) {
+function triggerReview(modeKey, promptHint, extraParams) {
   var modeInfo = REVIEW_MODES[modeKey];
   if (!modeInfo) return;
+  extraParams = extraParams || {};
 
   var runningLabel = (typeof t !== "undefined" && t("review.running"))
     ? t("review.running", { mode: modeInfo.label }) : "Running review: " + modeInfo.label;
@@ -2399,16 +2675,24 @@ function triggerReview(modeKey, promptHint) {
   );
   scrollToBottom();
 
+  var body = {
+    mode: modeInfo.apiMode,
+    project_id: "",
+    phase: "",
+    module: "",
+    prompt_hint: promptHint,
+  };
+  // Merge extra params (e.g. target_module, target_phase for cross_module_review)
+  for (var key in extraParams) {
+    if (extraParams.hasOwnProperty(key)) {
+      body[key] = extraParams[key];
+    }
+  }
+
   fetchWithAuth("/api/review", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      mode: modeInfo.apiMode,
-      project_id: "",
-      phase: "",
-      module: "",
-      prompt_hint: promptHint,
-    }),
+    body: JSON.stringify(body),
   })
     .then(function (resp) { return resp.json(); })
     .then(function (data) {
@@ -2463,11 +2747,255 @@ function addReviewReportMessage(modeInfo, markdownReport) {
   return msgDiv;
 }
 
+// ── ModuleReviewModal (cross_module_review) ────────────────────────────────
+/**
+ * ModuleReviewModal - Modal for selecting a completed module to review.
+ * Follows the showReviewPromptModal → triggerReview pattern.
+ * Supports two modes:
+ *   - "nitpick" (挑刺): select module + specific phase → cross_module_review with target_phase
+ *   - "check" (检查): select module only → cross_module_review without target_phase
+ */
+function ModuleReviewModal() {
+  this._init();
+}
+
+ModuleReviewModal.prototype._init = function () {
+  var self = this;
+  var modal = createModalOverlay();
+  this.overlay = modal.overlay;
+  this.card = modal.card;
+  this._closeModal = modal.close;
+
+  // Header
+  var header = document.createElement("div");
+  header.className = "modal-card-header";
+  var left = document.createElement("div");
+  left.className = "modal-card-header-left";
+  var title = (typeof t !== "undefined" && t("review.module_review_title")) || "Cross-Module Review";
+  left.innerHTML = '<span class="phase-badge-sm" style="background:#8b5cf6">&#128203;</span>' +
+    '<span class="module-label">' + title + '</span>';
+  header.appendChild(left);
+  var closeBtn = document.createElement("button");
+  closeBtn.className = "modal-card-close";
+  closeBtn.innerHTML = "&#10005;";
+  closeBtn.addEventListener("click", function () { self._closeModal(); });
+  header.appendChild(closeBtn);
+  this.card.appendChild(header);
+
+  // Body
+  var body = document.createElement("div");
+  body.className = "modal-card-body";
+  body.innerHTML = '<p style="text-align:center;color:#94a3b8;">' +
+    ((typeof t !== "undefined" && t("review.loading_modules")) || "Loading completed modules...") + '</p>';
+  this.card.appendChild(body);
+
+  // Footer
+  var footer = document.createElement("div");
+  footer.className = "modal-card-footer";
+  var cancelBtn = document.createElement("button");
+  cancelBtn.className = "confirm-reject";
+  cancelBtn.style.background = "#94a3b8";
+  cancelBtn.textContent = (typeof t !== "undefined" && t("review.cancel")) || "Cancel";
+  cancelBtn.addEventListener("click", function () { self._closeModal(); });
+  footer.appendChild(cancelBtn);
+  this.card.appendChild(footer);
+
+  document.body.appendChild(this.overlay);
+
+  // Fetch completed modules
+  fetchWithAuth("/api/completed_modules")
+    .then(function (resp) { return resp.json(); })
+    .then(function (data) {
+      if (data.modules && data.modules.length > 0) {
+        self._renderModuleList(body, footer, data.modules);
+      } else {
+        body.innerHTML = '<p style="text-align:center;color:#94a3b8;">' +
+          ((typeof t !== "undefined" && t("review.no_completed_modules")) || "No completed modules found.") + '</p>';
+      }
+    })
+    .catch(function () {
+      body.innerHTML = '<p style="text-align:center;color:#dc2626;">' +
+        ((typeof t !== "undefined" && t("review.load_modules_failed")) || "Failed to load module list.") + '</p>';
+    });
+};
+
+ModuleReviewModal.prototype._renderModuleList = function (body, footer, modules) {
+  var self = this;
+  body.innerHTML = "";
+
+  // Mode selector
+  var modeRow = document.createElement("div");
+  modeRow.className = "module-review-mode-row";
+  var modeLabel = document.createElement("label");
+  modeLabel.style.cssText = "font-weight:600;margin-right:0.5rem;";
+  modeLabel.textContent = ((typeof t !== "undefined" && t("review.mode_label")) || "Mode:");
+  modeRow.appendChild(modeLabel);
+
+  var nitpickRadio = document.createElement("input");
+  nitpickRadio.type = "radio"; nitpickRadio.name = "review-mode";
+  nitpickRadio.value = "nitpick"; nitpickRadio.checked = true;
+  var checkRadio = document.createElement("input");
+  checkRadio.type = "radio"; checkRadio.name = "review-mode";
+  checkRadio.value = "check";
+
+  modeRow.appendChild(nitpickRadio);
+  modeRow.appendChild(document.createTextNode(
+    " " + ((typeof t !== "undefined" && t("review.mode_nitpick")) || "Nitpick (Pick Phase)") + "  "));
+  modeRow.appendChild(checkRadio);
+  modeRow.appendChild(document.createTextNode(
+    " " + ((typeof t !== "undefined" && t("review.mode_check")) || "Check (All Phases)")));
+  body.appendChild(modeRow);
+
+  // Optional prompt hint
+  var hintLabel = (typeof t !== "undefined" && t("review.inject_prompt_hint"))
+    ? t("review.inject_prompt_hint") : "Inject a prompt hint?";
+  var hintDesc = (typeof t !== "undefined" && t("review.prompt_hint_desc"))
+    ? t("review.prompt_hint_desc") : "(Optional: Provide additional context and focus areas for the review)";
+  var hintPlaceholder = (typeof t !== "undefined" && t("review.prompt_hint_placeholder"))
+    ? t("review.prompt_hint_placeholder") : "e.g., Pay special attention to security, boundary conditions...";
+  var hintDiv = document.createElement("div");
+  hintDiv.style.cssText = "margin-bottom:0.75rem;";
+  hintDiv.innerHTML =
+    '<p class="review-modal-question">' + hintLabel +
+    '<span class="review-modal-hint-desc">' + hintDesc + '</span></p>' +
+    '<textarea id="module-review-hint-input" class="review-modal-textarea" ' +
+    'placeholder="' + hintPlaceholder + '" rows="3"></textarea>';
+  body.appendChild(hintDiv);
+
+  // Module list
+  var listDiv = document.createElement("div");
+  listDiv.className = "module-review-list";
+
+  for (var i = 0; i < modules.length; i++) {
+    var mod = modules[i];
+    var item = document.createElement("div");
+    item.className = "module-review-item";
+    item.dataset.module = mod.module;
+
+    var phases = mod.completed_phases || [];
+    var badgesHtml = "";
+    for (var j = 0; j < phases.length; j++) {
+      badgesHtml += '<span class="module-review-phase-badge">' + phases[j] + '</span>';
+    }
+    item.innerHTML = '<span class="module-review-name">' + self._esc(mod.module) + '</span>' +
+      '<span class="module-review-badges">' + badgesHtml + '</span>';
+
+    // Phase selector (for nitpick mode)
+    var phaseSelect = document.createElement("div");
+    phaseSelect.className = "module-review-phase-select";
+    for (var k = 0; k < phases.length; k++) {
+      var phaseChip = document.createElement("span");
+      phaseChip.className = "module-review-phase-chip";
+      phaseChip.textContent = phases[k];
+      phaseChip.dataset.phase = phases[k];
+      phaseChip.addEventListener("click", function (e) {
+        e.stopPropagation();
+        // Toggle: clicking the already-selected chip deselects it
+        if (this.classList.contains("selected")) {
+          this.classList.remove("selected");
+          delete this.parentElement.parentElement.dataset.selectedPhase;
+          return;
+        }
+        var chips = this.parentElement.querySelectorAll(".module-review-phase-chip");
+        for (var ci = 0; ci < chips.length; ci++) chips[ci].classList.remove("selected");
+        this.classList.add("selected");
+        this.parentElement.parentElement.dataset.selectedPhase = this.dataset.phase;
+      });
+      phaseSelect.appendChild(phaseChip);
+    }
+    if (phaseSelect.firstChild) {
+      phaseSelect.firstChild.classList.add("selected");
+      item.dataset.selectedPhase = phases[0];
+    }
+    item.appendChild(phaseSelect);
+
+    item.addEventListener("click", function (e) {
+      if (e.target.classList.contains("module-review-phase-chip")) return;
+      var items = listDiv.querySelectorAll(".module-review-item");
+      for (var ii = 0; ii < items.length; ii++) items[ii].classList.remove("selected");
+      this.classList.add("selected");
+    });
+
+    listDiv.appendChild(item);
+  }
+
+  // Auto-select the first module
+  if (listDiv.firstChild) {
+    listDiv.firstChild.classList.add("selected");
+  }
+
+  body.appendChild(listDiv);
+
+  // Mode toggle: show/hide phase selectors
+  nitpickRadio.addEventListener("change", function () {
+    var selects = listDiv.querySelectorAll(".module-review-phase-select");
+    for (var si = 0; si < selects.length; si++) selects[si].style.display = "block";
+  });
+  checkRadio.addEventListener("change", function () {
+    var selects = listDiv.querySelectorAll(".module-review-phase-select");
+    for (var si = 0; si < selects.length; si++) selects[si].style.display = "none";
+  });
+
+  // Run Review button — calls triggerReview like other review modes
+  var runBtn = document.createElement("button");
+  runBtn.className = "confirm-approve";
+  runBtn.textContent = (typeof t !== "undefined" && t("review.run")) || "Run Review";
+  runBtn.addEventListener("click", function () {
+    var selected = listDiv.querySelector(".module-review-item.selected");
+    if (!selected) {
+      listDiv.style.transition = "none";
+      listDiv.style.boxShadow = "0 0 0 3px rgba(239, 68, 68, 0.4)";
+      setTimeout(function () {
+        listDiv.style.transition = "box-shadow 0.5s";
+        listDiv.style.boxShadow = "";
+      }, 50);
+      return;
+    }
+
+    var targetModule = selected.dataset.module;
+    var isNitpick = nitpickRadio.checked;
+    var targetPhase = isNitpick ? (selected.dataset.selectedPhase || "") : "";
+
+    if (isNitpick && !targetPhase) {
+      var phaseSel = selected.querySelector(".module-review-phase-select");
+      if (phaseSel) {
+        phaseSel.style.transition = "none";
+        phaseSel.style.background = "#fef2f2";
+        phaseSel.style.borderRadius = "4px";
+        setTimeout(function () {
+          phaseSel.style.transition = "background 0.5s";
+          phaseSel.style.background = "";
+        }, 50);
+      }
+      return;
+    }
+
+    // Get the optional prompt hint
+    var ta = document.getElementById("module-review-hint-input");
+    var promptHint = ta ? ta.value.trim() : "";
+
+    self._closeModal();
+    triggerReview("cross_module_review", promptHint, {
+      target_module: targetModule,
+      target_phase: targetPhase,
+    });
+  });
+
+  footer.insertBefore(runBtn, footer.firstChild);
+};
+
+ModuleReviewModal.prototype._esc = function (text) {
+  var div = document.createElement("div");
+  div.textContent = text || "";
+  return div.innerHTML;
+};
+
 // ── Review button bindings ─────────────────────────────────────────────────
 (function () {
   var btnContract = document.getElementById("btn-review-contract");
   var btnCritique = document.getElementById("btn-review-critique");
   var btnDrift = document.getElementById("btn-review-drift");
+  var btnModule = document.getElementById("btn-review-module");
 
   if (btnContract) {
     btnContract.addEventListener("click", function () {
@@ -2482,6 +3010,11 @@ function addReviewReportMessage(modeInfo, markdownReport) {
   if (btnDrift) {
     btnDrift.addEventListener("click", function () {
       showReviewPromptModal("iteration_drift");
+    });
+  }
+  if (btnModule) {
+    btnModule.addEventListener("click", function () {
+      new ModuleReviewModal();
     });
   }
 })();

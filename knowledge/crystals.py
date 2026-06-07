@@ -166,6 +166,77 @@ class CrystalStore:
             conn.commit()
             conn.close()
 
+    def replace_crystal(
+        self,
+        crystal_type: str,
+        project_id: str,
+        module: str,
+        name: str,
+        content: dict,
+        parent_ids: list[int] | None = None,
+    ) -> tuple[int, str] | None:
+        """Deprecate an existing crystal and create a replacement with updated content.
+
+        Returns (old_id, new_crystal_id_str) on success, None if no active
+        crystal matching the natural key was found.
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM crystals WHERE crystal_type=? AND project_id=? "
+            "AND module=? AND name=? AND deprecated=0 "
+            "ORDER BY created_at DESC LIMIT 1",
+            (crystal_type, project_id, module, name),
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if row is None:
+            return None
+
+        old = self._row_to_dict(row)
+        old_id = old["id"]
+
+        # Bump version
+        old_version = old.get("version", "1.0")
+        try:
+            major = int(str(old_version).split(".")[0])
+        except (ValueError, IndexError):
+            major = 1
+        new_version = f"{major + 1}.0"
+
+        # Use old parent_ids if not explicitly provided
+        if parent_ids is None:
+            parent_ids = old.get("parent_ids", [])
+
+        self.deprecate_crystal(old_id)
+
+        new_id_str = self.put_crystal(
+            crystal_type=crystal_type,
+            project_id=project_id,
+            layer=old.get("layer", ""),
+            module=module,
+            name=name,
+            content=content,
+            parent_ids=parent_ids,
+        )
+
+        # Overwrite version on the new row
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE crystals SET version = ?, updated_at = datetime('now') "
+                "WHERE id = (SELECT MAX(id) FROM crystals WHERE crystal_type=? "
+                "AND project_id=? AND module=? AND name=?)",
+                (new_version, crystal_type, project_id, module, name),
+            )
+            conn.commit()
+            conn.close()
+
+        # Rebuild the returned ID string with correct version
+        new_id_str = f"{crystal_type}:{project_id}:{module}.{name}:v{new_version}"
+        return (old_id, new_id_str)
+
     # ━━━ 查询 API ━━━
 
     def get_crystal(self, crystal_id: int) -> dict | None:
@@ -210,6 +281,15 @@ class CrystalStore:
         rows = cursor.fetchall()
         conn.close()
         return [self._row_to_dict(row) for row in rows]
+
+    def get_crystals_grouped(self, project_id: str) -> dict[str, list[dict]]:
+        """Get all active crystals for a project, grouped by crystal_type."""
+        all_crystals = self.get_active_crystals(project_id=project_id)
+        grouped: dict[str, list[dict]] = {}
+        for c in all_crystals:
+            ct = c.get("crystal_type", "Unknown")
+            grouped.setdefault(ct, []).append(c)
+        return grouped
 
     def find_similar_contracts(self, query: str, top_k: int = 5) -> list[dict]:
         """
@@ -1115,6 +1195,48 @@ class CrystalStore:
         except Exception as e:
             import sys
             print(f"[CrystalStore] Failed to embed ExperienceCrystal: {e}", file=sys.stderr)
+            return False
+
+    def embed_project_report(self, crystal_id: int) -> bool:
+        """Embed a ProjectReport crystal into the vector DB for cross-project search."""
+        crystal = self.get_crystal(crystal_id)
+        if not crystal or crystal.get("crystal_type") != "ProjectReport":
+            return False
+
+        content = crystal.get("content", {})
+        if not isinstance(content, dict):
+            return False
+
+        title = content.get("title", crystal.get("name", ""))
+        inventory = json.dumps(content.get("crystal_inventory", {}), ensure_ascii=False)
+        searchable = f"{title} {inventory}"[:500]
+        if not searchable.strip():
+            return False
+
+        from . import vector
+
+        crystal_id_str = (
+            f"ProjectReport:{crystal.get('project_id', '')}:"
+            f"__report__.{crystal.get('name', '')}:v1.0"
+        )
+        summary_json = json.dumps({
+            "title": title,
+            "crystal_inventory": content.get("crystal_inventory", {}),
+            "generated_at": content.get("generated_at", ""),
+        }, ensure_ascii=False)
+
+        try:
+            vector.add_summary(
+                memory_id=crystal_id_str,
+                text=searchable,
+                doc_type="project_report",
+                source=f"crystal:{crystal_id_str}",
+                summary_json=summary_json,
+            )
+            return True
+        except Exception as e:
+            import sys
+            print(f"[CrystalStore] Failed to embed ProjectReport: {e}", file=sys.stderr)
             return False
 
     # ━━━ Helpers ━━━

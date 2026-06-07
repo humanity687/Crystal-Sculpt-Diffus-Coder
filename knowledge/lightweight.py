@@ -6,10 +6,9 @@
 """
 Lightweight model client — single shared instance for low-cost operations.
 
-Three responsibilities:
-  1. Query rewriting — abstract user intent before embedding search
-  2. Tool/skill summarization — LLM-driven structured summary extraction
-  3. Conversation summarization — replacement for heavy main-model summary
+Two responsibilities:
+  1. Tool/skill summarization — LLM-driven structured summary extraction
+  2. Conversation summarization — replacement for heavy main-model summary
 """
 
 import json
@@ -109,68 +108,6 @@ def get_max_tokens() -> int:
 def is_available() -> bool:
     """Check if lightweight model is configured and reachable."""
     return _get_client() is not None
-
-
-QUERY_REWRITE_PROMPT = r"""Rewrite the user's input into a dense keyword/phrase list for embedding-based skill matching. Output ONLY keywords separated by spaces — no sentences, no filler words.
-
-Rules:
-- Replace concrete names with abstract categories: "todo CLI" → "命令行工具 CLI工具"
-- Extract methodological keywords: 需求分析 架构设计 模块分解 接口契约 实现 测试 调试 重构 代码审查 性能优化
-- Include implied workflow phases: L0愿景 L1架构 L2模块分解 L3契约 L4逻辑 L5测试 L6骨架 L7实现 L8修复
-- Keep domain nouns but generalize: "登录跳转" → "Web应用 身份认证 页面跳转"
-- Output a single line of space-separated Chinese keywords, 30-80 characters
-- Do NOT invent details not implied by the input
-
-Examples:
-Input: "帮我写一个 todo 命令行工具"
-Output: 从想法到代码 结构化开发 模块分解 接口契约 L0-L7 多模块命令行工具 需求澄清 架构设计 逐模块实现
-
-Input: "这个函数的性能太差了，帮我优化"
-Output: 代码性能优化 瓶颈定位 算法改进 实现与测试 L7 L8
-
-Input: "为什么登录后跳转不了"
-Output: Web应用调试 身份认证 页面跳转 根因分析 修复验证 L8
-
-Input:"""
-
-
-def rewrite_query(user_input: str) -> str | None:
-    """Rewrite user input into abstract methodological language for better embedding match.
-
-    Returns the rewritten query, or None if lightweight model is unavailable
-    or the call fails. Callers should fall back to the original input.
-    """
-    client = _get_client()
-    if client is None:
-        return None
-
-    model = (_config or {}).get("model", "")
-    temperature = (_config or {}).get("temperature", 0.1)
-    max_tokens = (_config or {}).get("max_tokens", 200)
-
-    try:
-        kwargs = dict(
-            model=model,
-            messages=[
-                {"role": "user", "content": QUERY_REWRITE_PROMPT + " " + user_input}
-            ],
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=False,
-        )
-        eb = _extra_body()
-        if eb:
-            kwargs["extra_body"] = eb
-        resp = client.chat.completions.create(**kwargs)
-        result = resp.choices[0].message.content
-        if result:
-            result = result.strip()
-            print(f"[Lightweight] Query rewritten ({len(user_input)}→{len(result)} chars)",
-                  file=sys.stderr)
-            return result
-    except Exception as e:
-        print(f"[Lightweight] Query rewrite failed: {e}", file=sys.stderr)
-    return None
 
 
 SUMMARY_PROMPT = r"""Extract a structured summary from the documentation below. Return ONLY valid JSON, no markdown fences, no commentary.

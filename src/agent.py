@@ -638,17 +638,10 @@ class BaseAgent:
         Persistent ExperienceCrystals are injected in all branches for
         cross-project knowledge transfer.
         """
-        # ── Query rewriting: abstract user intent for better embedding match ──
+        # ── Use raw user query directly for embedding search ──
         if not msg or not msg.strip():
             return []
         search_query = msg
-        try:
-            from knowledge.lightweight import rewrite_query
-            rewritten = rewrite_query(msg)
-            if rewritten:
-                search_query = rewritten
-        except Exception:
-            pass
 
         if not self.crystal_store or not state.active_project:
             if self.crystal_store and state.active_project is None:
@@ -751,9 +744,13 @@ class BaseAgent:
                 for lc in logics[:self.crystal_k]:
                     content = lc.get("content", {}) if isinstance(lc.get("content"), dict) else {}
                     steps = content.get("algorithm_steps", [])
-                    # Normalize: steps may be list[str] or list[dict]
+                    # Normalize: steps may be list[str], list[dict], or dict
                     if isinstance(steps, list) and steps and isinstance(steps[0], dict):
                         steps = [s.get("step", s.get("description", str(s))) for s in steps]
+                    elif isinstance(steps, dict):
+                        steps = [f"{k}: {v}" for k, v in steps.items()]
+                    elif not isinstance(steps, list):
+                        steps = [str(steps)]
                     steps_preview = "; ".join(steps[:3]) if steps else "N/A"
                     results.append(
                         f"[LogicCrystal v{lc['vitality']}] {lc['module']}.{lc['name']}: "
@@ -793,8 +790,13 @@ class BaseAgent:
             for lc in (logics or [])[:self.crystal_k]:
                 content = lc.get("content", {}) if isinstance(lc.get("content"), dict) else {}
                 steps = content.get("algorithm_steps", [])
+                # Normalize: steps may be list[str], list[dict], or dict
                 if isinstance(steps, list) and steps and isinstance(steps[0], dict):
                     steps = [s.get("step", s.get("description", str(s))) for s in steps]
+                elif isinstance(steps, dict):
+                    steps = [f"{k}: {v}" for k, v in steps.items()]
+                elif not isinstance(steps, list):
+                    steps = [str(steps)]
                 steps_preview = "; ".join(steps[:3]) if steps else "N/A"
                 results.append(
                     f"[LogicCrystal v{lc['vitality']}] {lc['module']}.{lc['name']}: "
@@ -1553,7 +1555,20 @@ class BaseAgent:
 
                                     if result_data and result_data.get("status") == "stored":
                                         confirm_id = str(uuid.uuid4())
-                                        approved = yield {
+
+                                        # ── Build context snapshot (方案C) ──
+                                        proj = state.active_project
+                                        context_snapshot = {
+                                            "project_id": proj.get("project_id", "") if proj else "",
+                                            "active_phase": proj.get("phase", "") if proj else "",
+                                            "active_module": proj.get("module", "") if proj else "",
+                                            "request_phase": result_data.get("phase", ""),
+                                            "request_module": result_data.get("module", ""),
+                                            "target_module": result_data.get("target_module", ""),
+                                            "target_phase": result_data.get("target_phase", ""),
+                                        }
+
+                                        event_data = {
                                             "type": "approval_required",
                                             "confirm_id": confirm_id,
                                             "call_id": call_id,
@@ -1565,10 +1580,23 @@ class BaseAgent:
                                             "file_contents": result_data.get("file_contents", {}),
                                             "summary": arguments.get("summary", ""),
                                             "crystal_id": result_data.get("crystal_id", ""),
+                                            "context_snapshot": context_snapshot,
                                         }
+
+                                        # ── Cross-module review data ──
+                                        target_module = result_data.get("target_module", "")
+                                        if target_module:
+                                            event_data["target_module"] = target_module
+                                            event_data["target_phase"] = result_data.get("target_phase", "")
+                                            event_data["original_content"] = result_data.get("original_content", "")
+                                            event_data["original_files"] = result_data.get("original_files", [])
+                                            event_data["original_file_contents"] = result_data.get("original_file_contents", {})
+                                            event_data["original_summary"] = result_data.get("original_summary", "")
+
+                                        approved = yield event_data
                                         if approved:
                                             # Could be True or a dict {"approved": true, ...}
-                                            is_approved = approved if isinstance(approved, bool) else approved.get("approved", True)
+                                            is_approved = approved if isinstance(approved, bool) else approved.get("approved", False)
                                             if is_approved:
                                                 result = (
                                                     f"Approved. Snapshot stored: "
@@ -2101,9 +2129,14 @@ class BaseAgent:
             l = logic[0]
             content = l.get("content", {}) if isinstance(l.get("content"), dict) else {}
             steps = content.get("algorithm_steps", [])
+            # Normalize: steps may be list[str], list[dict], or dict
+            if isinstance(steps, dict):
+                steps = [f"{k}: {v}" for k, v in steps.items()]
+            elif isinstance(steps, list) and steps and isinstance(steps[0], dict):
+                steps = [s.get("step", s.get("description", str(s))) for s in steps]
+            elif not isinstance(steps, list):
+                steps = [str(steps)]
             if steps:
-                if isinstance(steps[0], dict):
-                    steps = [s.get("step", s.get("description", str(s))) for s in steps]
                 steps_str = " → ".join(steps[:6])
                 lines.append(f"**L4 算法**：{steps_str}")
                 lines.append("")
@@ -2817,3 +2850,284 @@ class BaseAgent:
             f"(dropped {dropped}, {'+summary' if summary else 'no crystals active'})",
             file=sys.stderr,
         )
+
+    def full_compress(self) -> dict:
+        """Full compression: replace all non-system messages with one LLM summary.
+
+        Keeps messages[0] (base system prompt), feeds everything else to an LLM
+        for comprehensive summarization, then appends the summary as a single
+        system message. After that, re-injects the core skill.
+
+        This is the most aggressive mode — use when the context is bloated and
+        modular/safe modes can't free enough space.
+
+        Returns:
+            {"archived_modules": [], "cut_messages": int, "remaining_messages": int}
+        """
+        if len(self.messages) <= 5:
+            return {"archived_modules": [], "cut_messages": 0, "remaining_messages": len(self.messages)}
+
+        orig_len = len(self.messages)
+        self._clean_orphan_tool_messages()
+
+        # Keep system prompt, summarize everything else
+        system_prompt = self.messages[0]
+        to_summarize = self.messages[1:]
+
+        # Build summary text from messages
+        msgs_text = []
+        for i, msg in enumerate(to_summarize[-80:]):  # last 80 messages max
+            role = msg.get("role", "?")
+            content = str(msg.get("content", ""))[:1500]
+            if msg.get("tool_calls"):
+                tool_names = [tc.get("function", {}).get("name", "?")
+                              for tc in msg["tool_calls"]]
+                content = f"[Tool calls: {', '.join(tool_names)}] " + content
+            msgs_text.append(f"[{role}] {content}")
+
+        combined = "\n\n---\n\n".join(msgs_text)
+        if len(combined) > 30000:
+            combined = combined[-30000:]
+
+        summary = self._build_degradation_summary(
+            to_summarize, len(to_summarize)
+        )
+
+        # Rebuild messages: system prompt + summary + (if compression summary isn't a dict, wrap it)
+        new_messages = [system_prompt]
+        if summary and isinstance(summary, dict) and summary.get("content"):
+            new_messages.append(summary)
+        elif summary and isinstance(summary, str):
+            new_messages.append({"role": "system", "content": summary})
+        else:
+            # LLM summary failed — fall back to a static crystal-based summary
+            static = self._static_full_summary()
+            if static:
+                new_messages.append({"role": "system", "content": static})
+
+        self.messages = new_messages
+        self.message_meta = {0: self.message_meta.get(0, {})}
+        if len(new_messages) > 1:
+            self.message_meta[1] = {"skill_layer": "L8", "is_approval": False}
+
+        self._reinject_core_skill()
+
+        after = len(self.messages)
+        cut = orig_len - after
+        print(
+            f"[FullCompress] {orig_len} → {after} messages "
+            f"(dropped {cut}, full summarization)",
+            file=sys.stderr,
+        )
+        return {
+            "archived_modules": [],
+            "cut_messages": cut,
+            "remaining_messages": after,
+        }
+
+    def _static_full_summary(self) -> str | None:
+        """Build a static full-compression summary from CrystalStore data.
+
+        Used when the LLM summarization call fails during full_compress().
+        """
+        if not self.crystal_store:
+            return None
+
+        parts = ["## 上下文全量压缩\n"]
+        parts.append("以下是从 CrystalStore 恢复的项目状态摘要：\n")
+
+        # Active project overview
+        all_crystals = self.crystal_store.get_active_crystals()
+        if all_crystals:
+            # Group by module
+            modules: dict[str, dict] = {}
+            for c in all_crystals:
+                mod = c.get("module", "__unknown__")
+                if mod not in modules:
+                    modules[mod] = {"types": set(), "count": 0}
+                modules[mod]["types"].add(c.get("crystal_type", "?"))
+                modules[mod]["count"] += 1
+
+            for mod, info in sorted(modules.items()):
+                types_str = ", ".join(sorted(info["types"]))
+                parts.append(f"- **{mod}**: {info['count']} crystals ({types_str})")
+
+        # Key contracts
+        contracts = self.crystal_store.get_active_crystals(crystal_type="ContractCrystal")
+        if contracts:
+            parts.append("\n### 关键契约")
+            for c in contracts[:5]:
+                content = c.get("content", {}) if isinstance(c.get("content"), dict) else {}
+                sig = content.get("signature", c.get("name", "?"))
+                mod = c.get("module", "?")
+                parts.append(f"- [{mod}] `{str(sig)[:200]}`")
+
+        # Active traces
+        traces = self.crystal_store.get_active_crystals(crystal_type="TraceCrystal")
+        if traces:
+            parts.append("\n### 已知问题")
+            for t in traces[:5]:
+                content = t.get("content", {}) if isinstance(t.get("content"), dict) else {}
+                parts.append(f"- {t.get('name', '?')}: {content.get('symptom', '?')[:120]}")
+
+        return "\n".join(parts)
+
+    def modular_compress(self) -> dict:
+        """Module-level compression: archive every completed module in-place.
+
+        Unlike memory() which tries to find a single global cut point, this method
+        discovers completed modules from two sources:
+          1. message_meta chain_id entries (format: {project}/{module}/L3-L7)
+          2. CrystalStore ImplCrystal records (fallback when chain_id not tracked)
+
+        Each completed module chain is replaced with a crystal-based summary message,
+        then a lightweight final trim is applied.
+
+        Returns:
+            {"archived_modules": [...], "cut_messages": int, "remaining_messages": int}
+        """
+        if len(self.messages) <= 5:
+            return {"archived_modules": [], "cut_messages": 0, "remaining_messages": len(self.messages)}
+
+        self._clean_orphan_tool_messages()
+        before = len(self.messages)
+
+        # ── Step 1: Discover completed modules ──
+        # Source A: chain_id entries in message_meta
+        chain_modules: dict[str, str] = {}  # module_name -> project_id
+        for idx_str, meta in self.message_meta.items():
+            cid = meta.get("chain_id", "")
+            if not cid or not cid.endswith("/L3-L7"):
+                continue
+            parts = cid.split("/")
+            if len(parts) >= 3:
+                p_id = parts[0]
+                mod = "/".join(parts[1:-1])
+                if mod not in chain_modules:
+                    chain_modules[mod] = p_id
+
+        # Source B: CrystalStore ImplCrystal — catches modules whose chain_id
+        # was never recorded in message_meta (e.g. early-phase projects)
+        crystal_modules: dict[str, str] = {}  # module_name -> project_id
+        if self.crystal_store:
+            all_impls = self.crystal_store.get_active_crystals(
+                crystal_type="ImplCrystal"
+            )
+            for c in all_impls:
+                mod = c.get("module", "")
+                pid = c.get("project_id", "")
+                if mod and pid and mod not in chain_modules and mod not in crystal_modules:
+                    crystal_modules[mod] = pid
+
+        # Merge: chain_id entries take priority (they have precise message ranges)
+        all_targets = dict(chain_modules)
+        for mod, pid in crystal_modules.items():
+            if mod not in all_targets:
+                all_targets[mod] = pid
+
+        if not all_targets:
+            return {"archived_modules": [], "cut_messages": 0, "remaining_messages": before}
+
+        print(
+            f"[ModularCompress] Found {len(all_targets)} module(s) to check "
+            f"({len(chain_modules)} from chain_id, {len(crystal_modules)} from CrystalStore)",
+            file=sys.stderr,
+        )
+
+        # ── Step 2: Archive each module ──
+        archived = []
+        for module_name, project_id in all_targets.items():
+            if self._archive_module(project_id, module_name):
+                archived.append({"project_id": project_id, "module": module_name})
+                continue
+
+            # Fallback: if chain-based archive fails but ImplCrystal exists,
+            # try scanning by module metadata range
+            if module_name in crystal_modules and module_name not in chain_modules:
+                if self._archive_module_by_meta_range(project_id, module_name):
+                    archived.append({"project_id": project_id, "module": module_name})
+
+        # ── Step 3: Final lightweight trim ──
+        self._compact_messages()
+
+        after = len(self.messages)
+        cut_messages = before - after
+
+        if after > 50:
+            print(
+                f"[ModularCompress] {after} messages remain after archiving, "
+                f"running memory() for final trim",
+                file=sys.stderr,
+            )
+            self.memory()
+            after = len(self.messages)
+            cut_messages = before - after
+
+        print(
+            f"[ModularCompress] {before} → {after} messages "
+            f"({len(archived)} modules archived, {cut_messages} total removed)",
+            file=sys.stderr,
+        )
+
+        return {
+            "archived_modules": archived,
+            "cut_messages": cut_messages,
+            "remaining_messages": after,
+        }
+
+    def _archive_module_by_meta_range(self, project_id: str, module_name: str) -> bool:
+        """Archive a module by finding its message range from module metadata.
+
+        Fallback for _archive_module() when no chain_id exists in message_meta.
+        Scans message_meta for all indices tagged with this (project_id, module),
+        then replaces the range with a crystal-based summary.
+        """
+        if not self.message_meta:
+            return False
+
+        indices = sorted(
+            int(idx) for idx, meta in self.message_meta.items()
+            if meta.get("project_id") == project_id and meta.get("module") == module_name
+        )
+        if len(indices) < 3:
+            return False
+
+        chain_start = indices[0]
+        chain_end = indices[-1]
+
+        summary = self._build_module_summary(project_id, module_name)
+        if not summary:
+            return False
+
+        summary_msg = {"role": "assistant", "content": summary}
+
+        self.messages = (
+            self.messages[:chain_start]
+            + [summary_msg]
+            + self.messages[chain_end + 1:]
+        )
+
+        # Rebuild metadata
+        new_meta = {}
+        replaced_count = chain_end - chain_start + 1
+        offset = replaced_count - 1
+        for old_idx, meta in self.message_meta.items():
+            if old_idx < chain_start:
+                new_meta[old_idx] = meta
+            elif old_idx > chain_end:
+                new_meta[old_idx - offset] = meta
+        new_meta[chain_start] = {
+            "skill_layer": "L8",
+            "module": module_name,
+            "project_id": project_id,
+            "is_approval": False,
+            "chain_id": None,
+        }
+        self.message_meta = new_meta
+
+        print(
+            f"[Archive] Module {module_name}: meta-range compressed "
+            f"({replaced_count} messages → 1, no chain_id)",
+            file=sys.stderr,
+        )
+        return True

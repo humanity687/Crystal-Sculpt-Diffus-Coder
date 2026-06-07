@@ -133,7 +133,7 @@ The project authors and contributors accept no liability for any direct or indir
 
 ## License
 
-[GPL v3](COPYING)
+[AGPL v3](COPYING)
 
 ---
 

@@ -1340,6 +1340,93 @@ body {
   color: #334155;
 }
 
+/* ── Compress mode selection popup ── */
+.compress-mode-card {
+  max-width: 360px;
+}
+.compress-mode-title {
+  text-align: center;
+  font-size: 1.1rem;
+  margin-bottom: 0.4rem;
+}
+.compress-mode-desc {
+  font-size: 0.82rem;
+  color: #64748b;
+  text-align: center;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+.compress-mode-btn-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+.compress-mode-safe,
+.compress-mode-modular,
+.compress-mode-full {
+  padding: 0.65rem 0.9rem;
+  border-radius: 0.5rem;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.15s;
+}
+.compress-mode-safe:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+.compress-mode-modular:hover {
+  background: #fefce8;
+  border-color: #fde047;
+}
+.compress-mode-full:hover {
+  background: #f5f3ff;
+  border-color: #c4b5fd;
+}
+
+/* ── Lazy loading ── */
+.load-more-btn {
+  display: block;
+  width: 100%;
+  padding: 0.5rem;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 0.5rem;
+  color: #64748b;
+  font-size: 0.8rem;
+  cursor: pointer;
+  margin-bottom: 0.5rem;
+  text-align: center;
+}
+.load-more-btn:hover {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+/* ── New message indicator ── */
+.new-msg-indicator {
+  position: fixed;
+  bottom: 5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  padding: 0.4rem 1rem;
+  border-radius: 2rem;
+  border: none;
+  background: #3b82f6;
+  color: white;
+  font-size: 0.8rem;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+  animation: fadeInUp 0.2s ease;
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
 /* Configuration form */
 #config-form {
   display: flex;
@@ -1788,6 +1875,18 @@ body {
   color: #92400e;
 }
 
+/* ── Module Review Button ──────────────────────────────────────────── */
+.review-btn-module {
+  background: #f5f3ff;
+  border-color: #ddd6fe;
+  color: #6d28d9;
+}
+.review-btn-module:hover {
+  background: #ede9fe;
+  border-color: #c4b5fd;
+  color: #5b21b6;
+}
+
 /* ── Review Prompt Modal ─────────────────────────────────────────────── */
 .review-modal-question {
   font-size: 0.95rem;
@@ -1894,6 +1993,174 @@ body {
 }
 .review-report-content table th {
   background: #f5f3ff;
+}
+
+/* ── Module Review Modal ────────────────────────────────────────────── */
+.module-review-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.75rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 0.88rem;
+}
+.module-review-mode-row input[type="radio"] {
+  accent-color: #7c3aed;
+}
+
+.module-review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.module-review-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: #fafcff;
+  user-select: none;
+}
+.module-review-item:hover {
+  border-color: #c4b5fd;
+  background: #f5f3ff;
+}
+.module-review-item.selected {
+  border-color: #7c3aed;
+  background: #ede9fe;
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.12);
+}
+
+.module-review-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #1e293b;
+  min-width: 80px;
+}
+
+.module-review-badges {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.module-review-phase-badge {
+  display: inline-block;
+  background: #e2e8f0;
+  color: #475569;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.module-review-phase-select {
+  width: 100%;
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  padding-top: 0.35rem;
+  border-top: 1px dashed #e2e8f0;
+  margin-top: 0.25rem;
+}
+
+.module-review-phase-chip {
+  display: inline-block;
+  padding: 2px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 1rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.12s;
+  color: #475569;
+  background: #fff;
+  user-select: none;
+}
+.module-review-phase-chip:hover {
+  border-color: #a78bfa;
+  color: #5b21b6;
+  background: #f5f3ff;
+}
+.module-review-phase-chip.selected {
+  border-color: #7c3aed;
+  background: #7c3aed;
+  color: #fff;
+}
+
+/* ── Approval Modal: Cross-Module Review Context ─────────────────────── */
+.modal-review-context {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: #f5f3ff;
+  border-bottom: 1px solid #ede9fe;
+  font-size: 0.82rem;
+  color: #5b21b6;
+  flex-shrink: 0;
+}
+.modal-review-context .review-badge-icon {
+  font-size: 1rem;
+}
+.modal-review-context .review-badge-label {
+  font-weight: 500;
+}
+
+/* ── Approval Modal: Original Snapshot Section ──────────────────────── */
+.modal-original-section {
+  border-top: 2px solid #e9d5ff;
+  margin-top: 1rem;
+  flex-shrink: 0;
+}
+
+.modal-original-toggle {
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  color: #6d28d9;
+  cursor: pointer;
+  user-select: none;
+  background: #faf5ff;
+  transition: background 0.12s;
+  font-weight: 500;
+}
+.modal-original-toggle:hover {
+  background: #f3e8ff;
+}
+
+.modal-original-body {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid #f3e8ff;
+  background: #fdfaff;
+}
+
+.modal-original-content {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: #4c1d95;
+  opacity: 0.9;
+}
+.modal-original-content h1,
+.modal-original-content h2,
+.modal-original-content h3 {
+  color: #5b21b6;
+  font-size: 0.95rem;
+  margin-top: 0.75rem;
+  margin-bottom: 0.4rem;
+}
+.modal-original-content pre {
+  background: #faf5ff;
+  border: 1px solid #e9d5ff;
 }
 
 .review-loading {

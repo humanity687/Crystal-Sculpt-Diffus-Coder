@@ -55,7 +55,8 @@ def _format_crystal_summary(c: dict, index: int | None = None) -> str:
     score = c.get("_score")
 
     # Build recall_id for use with recall(crystal_id="...")
-    recall_id = f"{ctype}:{proj}:{mod}.{name}:v1.0"
+    version = c.get("version", "1.0")
+    recall_id = f"{ctype}:{proj}:{mod}.{name}:v{version}"
 
     parts = [f"{prefix}`{ctype}`"]
     if proj:
@@ -319,21 +320,117 @@ def _run_find(active: dict | None, crystal_type: str = "",
     return "\n".join(lines)
 
 
+def _run_adjust(active: dict, crystal_type: str, module: str,
+                name: str, content: str) -> str:
+    """Adjust an existing crystal — deprecate old, create replacement with bumped version."""
+    from src import state
+
+    if state.crystal_store is None:
+        return "Error: CrystalStore is not initialized."
+
+    if crystal_type not in VALID_CRYSTAL_TYPES:
+        return (
+            f"Error: Unknown crystal_type '{crystal_type}'. "
+            f"Valid types: {', '.join(sorted(VALID_CRYSTAL_TYPES))}"
+        )
+
+    try:
+        content_dict = json.loads(content)
+    except json.JSONDecodeError as e:
+        return f"Error: content must be valid JSON. {e}"
+
+    if not isinstance(content_dict, dict):
+        return "Error: content must be a JSON object (dictionary)."
+
+    # ModuleRecord content validation
+    if crystal_type == "ModuleRecord":
+        record_type = content_dict.get("record_type", "")
+        if record_type not in MODULE_RECORD_FIELDS:
+            return (
+                f"Error: ModuleRecord requires 'record_type' to be one of: "
+                f"{', '.join(MODULE_RECORD_FIELDS.keys())}"
+            )
+        required_fields = MODULE_RECORD_FIELDS[record_type]
+        missing = [f for f in required_fields if f not in content_dict]
+        if missing:
+            return (
+                f"Error: ModuleRecord ({record_type}) missing required fields: "
+                f"{', '.join(missing)}"
+            )
+
+    # ExperienceCrystal content validation
+    if crystal_type == "ExperienceCrystal":
+        if not content_dict.get("title") or not content_dict.get("summary"):
+            return "Error: ExperienceCrystal requires 'title' and 'summary' fields."
+        refs = content_dict.get("reference_values")
+        if refs is not None and not isinstance(refs, dict):
+            return "Error: ExperienceCrystal 'reference_values' must be a JSON object."
+        tags = content_dict.get("tags")
+        if tags is not None and not isinstance(tags, list):
+            return "Error: ExperienceCrystal 'tags' must be a JSON array."
+
+    try:
+        result = state.crystal_store.replace_crystal(
+            crystal_type=crystal_type,
+            project_id=active["project_id"],
+            module=module.strip(),
+            name=name.strip(),
+            content=content_dict,
+        )
+    except Exception as e:
+        return f"Error adjusting crystal: {e}"
+
+    if result is None:
+        return (
+            f"Error: No active crystal found matching "
+            f"type={crystal_type} module={module.strip()} name={name.strip()}. "
+            f"Use crystallize(command='find', crystal_type='{crystal_type}', "
+            f"module='{module.strip()}') to list existing crystals."
+        )
+
+    old_id, new_id_str = result
+
+    if state.journal:
+        content_preview = str(content_dict)[:300]
+        state.journal.record_event(
+            "crystal_adjust",
+            project_id=active["project_id"],
+            phase=active["phase"],
+            module=module.strip(),
+            data={
+                "old_crystal_id": old_id,
+                "new_crystal_id": new_id_str,
+                "crystal_type": crystal_type,
+                "name": name.strip(),
+                "content_summary": content_preview,
+            },
+        )
+
+    return (
+        f"Crystal adjusted successfully. "
+        f"Old crystal (id={old_id}) deprecated. "
+        f"New crystal_id={new_id_str}"
+    )
+
+
 schema = {
     "type": "function",
     "function": {
         "name": "crystallize",
         "description": (
-            "Crystal management tool. Two commands: "
-            "'store' (default): store a thought crystal in CrystalStore. "
+            "Crystal management tool. Three commands: "
+            "'store' (default): store a new thought crystal in CrystalStore. "
             "Takes crystal_type (ArchCrystal, ModMap, ContractCrystal, LogicCrystal, SkeletonCrystal, "
             "ImplCrystal, TraceCrystal, ExperienceCrystal, ModuleRecord), module, name, and content (JSON string). "
+            "'adjust': replace an existing crystal — deprecates the old version and creates a new one "
+            "with bumped version (v1.0→v2.0). Takes the same parameters as store. "
+            "Use this during L3.1 renegotiation or when revising any previously stored crystal. "
             "'find': search for existing crystals by crystal_type, module, layer, or query (vector similarity)."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "command": {"type": "string", "enum": ["store", "find"], "description": "Command: 'store' (default) or 'find'."},
+                "command": {"type": "string", "enum": ["store", "find", "adjust"], "description": "Command: 'store' (default), 'find', or 'adjust'."},
                 "crystal_type": {"type": "string", "description": "Crystal type. Required for store. For find: filter by type."},
                 "module": {"type": "string", "description": "Module name for the crystal."},
                 "name": {"type": "string", "description": "Human-readable name for the crystal."},
@@ -354,10 +451,11 @@ def execute(command: str = "store",
             query: str = "", layer: str = "",
             limit: int = 20) -> str:
     """
-    Crystal management tool — store new crystals or find existing ones.
+    Crystal management tool — store, adjust, or find crystals.
 
     Commands:
-      store  — Store a thought crystal in CrystalStore (default, backward-compatible).
+      store  — Store a new thought crystal in CrystalStore (default, backward-compatible).
+      adjust — Replace an existing crystal (deprecate old + create new with bumped version).
       find   — Search for crystals by type, module, layer, or vector similarity.
 
     --- store ---
@@ -400,6 +498,26 @@ def execute(command: str = "store",
         name: Human-readable name (function name or decision title).
         content: JSON string with structured crystal content.
 
+    --- adjust ---
+    Replace an existing crystal with updated content. The old crystal is deprecated
+    (soft-deleted) and a new one is created with a bumped version number (v1.0→v2.0).
+
+    Adjust args (same as store):
+        crystal_type: Crystal type of the existing crystal to replace.
+        module: Module name of the existing crystal.
+        name: Name of the existing crystal to replace.
+        content: New JSON content — completely replaces the old content.
+
+    When to use:
+    - After L3.1 contract renegotiation — replace the old ContractCrystal
+    - After fixing a bug at L8 and revising the ImplCrystal
+    - After phase rollback — replace the rolled-back crystal with the revised version
+    - Any time a previously stored crystal needs its content updated
+
+    The natural key (type + project + module + name) must match an existing active
+    crystal. Use crystallize(command="find", ...) to list existing crystals first
+    if unsure about the exact name.
+
     --- find ---
     Search for existing crystals. Two modes:
     1. Structured filter: filter by crystal_type, module, and/or layer.
@@ -437,6 +555,25 @@ def execute(command: str = "store",
         if auto_detected:
             result = "[Auto-switched to find mode — query provided without crystal_type]\n" + result
         return result
+
+    if cmd == "adjust":
+        if not crystal_type.strip():
+            return (
+                "Error: 'crystal_type' is required for adjust mode. "
+                f"Valid types: {', '.join(sorted(VALID_CRYSTAL_TYPES))}."
+            )
+        if not content.strip():
+            return (
+                "Error: 'content' is required for adjust mode and must be a "
+                "non-empty JSON string. Example: content='{\"signature\": \"...\"}'"
+            )
+        active = state.active_project
+        if active is None:
+            return (
+                "Error: No active project. Call set_project first to activate "
+                "the crystal-aware engineering workflow."
+            )
+        return _run_adjust(active, crystal_type, module, name, content)
 
     # --- store (default, backward-compatible) ---
     # Validate required parameters first (before project check, so the
